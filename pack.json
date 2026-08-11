@@ -1,0 +1,18 @@
+{
+  "name": "rigNodeEditor",
+  "url": "https://github.com/rigkid/rigNodeEditor.git",
+  "ref": "main",
+  "version": "0.1.0",
+  "author": "Rigkid",
+  "license": "MIT Rigkid Contributors",
+  "description": "ImGui node graph editor over CNodeGraph (rigNodeComponent).",
+  "dependencies": [
+    "rigComponent",
+    "rigProject",
+    "rigNodeComponent",
+    "rigImGui"
+  ],
+  "include_paths": [
+    "src"
+  ]
+}
