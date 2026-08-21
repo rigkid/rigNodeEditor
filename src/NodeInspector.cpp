@@ -177,7 +177,7 @@ void drawGraphNodeInspector(rigkit::MEcs& ecs, entt::entity graphEntity) {
 					if (p.type == EPT_FLOAT || p.type == EPT_DOUBLE || p.type == EPT_INT ||
 						p.type == EPT_UINT) {
 						floatProps.push_back(p.name);
-					} else if (p.type == EPT_VEC2 || p.type == EPT_IMVEC2) {
+					} else if (p.type == EPT_VEC2) {
 						vec2Props.push_back(p.name);
 					}
 				}
