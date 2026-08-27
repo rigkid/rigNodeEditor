@@ -1,7 +1,7 @@
 #pragma once
 
-#include "CNodeGraph.h"
 #include "ecs/MEcs.h"
+#include "CNodeGraph.h"
 
 namespace rig {
 namespace node {
@@ -15,7 +15,7 @@ void drawGraphNodeInspector(rigkit::MEcs& ecs, entt::entity graphEntity);
 
 /**
  * @brief Properties extra: Modulate float fields on a selected scene entity into the graph.
- * @details Spawns `mod.lfo` → `ref.float` (entity + prop). No-op when @p entity is the graph.
+ * @details Spawns `mod.lfo` to `ref.float` (entity + prop). No-op when @p entity is the graph.
  */
 void drawSceneModulateDrawer(rigkit::MEcs& ecs, entt::entity entity);
 

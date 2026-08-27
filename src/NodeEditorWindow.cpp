@@ -1,28 +1,28 @@
 #include "NodeEditorWindow.h"
 
-#include "CProject.h"
+#include "core/pack/MPack.h"
+#include "core/RigKitEngine.h"
+#include "ecs/PropertyReflection.h"
 #include "CNodeGraph.h"
+#include "CProject.h"
 #include "CSelection.h"
 #include "EntityPick.h"
 #include "FileDialogs.h"
 #include "GraphEval.h"
+#include "MWindow.h"
 #include "NodeCatalog.h"
 #include "NodeGraph.h"
 #include "PropertiesWindow.h"
-#include "SceneDragPayload.h"
-#include "core/RigKitEngine.h"
-#include "core/pack/MPack.h"
-#include "ecs/PropertyReflection.h"
-#include "MWindow.h"
 #include "rigProject.h"
-#include <spdlog/spdlog.h>
+#include "SceneDragPayload.h"
 
 #include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
-#include <string>
+#include <spdlog/spdlog.h>
 #include <string_view>
+#include <string>
 
 namespace rigkit {
 namespace {
@@ -425,10 +425,9 @@ void NodeEditorWindow::drawCanvas(ecs::NodeGraphData& graph, const rig::node::Ev
 					entName = "entity";
 				}
 				const char* typeId = "ref.float";
-				if (prop->propType == EPT_VEC2 || prop->propType == EPT_IMVEC2) {
+				if (prop->propType == EPT_VEC2) {
 					typeId = "ref.vec2";
-				} else if (prop->propType == EPT_COLOR || prop->propType == EPT_VEC4 ||
-						   prop->propType == EPT_IMVEC4) {
+				} else if (prop->propType == EPT_COLOR || prop->propType == EPT_VEC4) {
 					typeId = "ref.color";
 				}
 				const glm::vec2 dropPos = toGraph(mouse);

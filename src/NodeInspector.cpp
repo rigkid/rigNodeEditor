@@ -6,11 +6,10 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
-#include <string>
-#include <string_view>
-#include <vector>
-
 #include <imgui.h>
+#include <string_view>
+#include <string>
+#include <vector>
 
 namespace rig {
 namespace node {

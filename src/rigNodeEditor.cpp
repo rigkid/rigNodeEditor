@@ -1,13 +1,14 @@
 #include "rigNodeEditor.h"
 
+#include "core/IMui.h"
+#include "core/pack/PackRegistry.h"
+#include "core/RigKitEngine.h"
 #include "CNodeGraph.h"
+#include "MWindow.h"
 #include "NodeEditorWindow.h"
 #include "NodeInspector.h"
 #include "PropertiesWindow.h"
-#include "core/IMui.h"
-#include "core/RigKitEngine.h"
-#include "core/pack/PackRegistry.h"
-#include "MWindow.h"
+
 #include <spdlog/spdlog.h>
 
 namespace rigkit {
@@ -28,7 +29,7 @@ void rigNodeEditor::setup() {
 	}
 	auto* ui = engine->getUiManager();
 	if (!ui) {
-		spdlog::warn("[rigNodeEditor] no IMui — skip Node Editor (need rigImGui)");
+		spdlog::warn("[rigNodeEditor] no IMui - skip Node Editor (need rigImGui)");
 		return;
 	}
 	auto* wm = ui->getWindowManager();

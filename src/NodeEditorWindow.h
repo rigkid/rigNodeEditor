@@ -1,17 +1,18 @@
 #pragma once
 
-#include "CNodeGraph.h"
-#include "GraphEval.h"
-#include "IWindow.h"
-#include "ecs/MEcs.h"
-
-#include <glm/glm.hpp>
 #include <cstdint>
+#include <glm/glm.hpp>
+#include <imgui.h>
+#include <imfilebrowser.h>
 #include <memory>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-#include <imfilebrowser.h>
+
+#include "ecs/MEcs.h"
+#include "CNodeGraph.h"
+#include "GraphEval.h"
+#include "IWindow.h"
 
 namespace rigkit {
 

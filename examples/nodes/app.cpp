@@ -1,7 +1,8 @@
 #include "app.h"
 
-#include "core/RigKitEngine.h"
 #include "core/pack/MPack.h"
+#include "core/RigKitEngine.h"
+#include "rendering/U_gladGlfw.h"
 #include "packs/rigComponent/src/CSelection.h"
 #include "packs/rigComponent/src/rig/create.h"
 #include "packs/rigComponent/src/rigComponent.h"
@@ -17,9 +18,7 @@
 #include "packs/rigProject/src/CProject.h"
 #include "packs/rigProject/src/rigProject.h"
 #include "packs/rigSystems/src/rigSystems.h"
-
 #include "imgui_internal.h"
-#include "rendering/U_gladGlfw.h"
 
 #include <filesystem>
 #include <spdlog/spdlog.h>
