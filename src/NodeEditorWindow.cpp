@@ -1,8 +1,5 @@
 #include "NodeEditorWindow.h"
 
-#include "core/pack/MPack.h"
-#include "core/RigKitEngine.h"
-#include "ecs/PropertyReflection.h"
 #include "CNodeGraph.h"
 #include "CProject.h"
 #include "CSelection.h"
@@ -12,17 +9,21 @@
 #include "MWindow.h"
 #include "NodeCatalog.h"
 #include "NodeGraph.h"
+#include "PropEditors.h"
 #include "PropertiesWindow.h"
-#include "rigProject.h"
 #include "SceneDragPayload.h"
+#include "core/RigKitEngine.h"
+#include "core/pack/MPack.h"
+#include "ecs/PropertyReflection.h"
+#include "rigProject.h"
 
 #include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <spdlog/spdlog.h>
-#include <string_view>
 #include <string>
+#include <string_view>
 
 namespace rigkit {
 namespace {
@@ -33,6 +34,10 @@ constexpr float kTitleH = 22.f;
 constexpr float kPinR = 5.f;
 constexpr float kPinRow = 20.f;
 constexpr float kPad = 8.f;
+constexpr float kParamRow = 22.f;
+constexpr float kParamGap = 6.f;
+/// Below this zoom inline widgets are unreadable - edit in Properties instead.
+constexpr float kInlineEditMinZoom = 0.7f;
 
 bool isRefType(std::string_view typeId) {
 	return typeId == "ref.float" || typeId == "ref.vec2" || typeId == "ref.color";
@@ -43,13 +48,40 @@ bool isSinkType(std::string_view typeId) {
 		   isRefType(typeId);
 }
 
+/// Rows of inline (on-node) param widgets. String params (ref entity/prop)
+/// stay in the Properties inspector.
+int inlineParamRows(const ecs::GraphNode& n) {
+	if (n.isGroup() || isRefType(n.typeId)) {
+		return 0;
+	}
+	if (n.typeId == "color.value" || n.typeId == "vec2.value") {
+		return 1;
+	}
+	const auto* entry = rig::node::findCatalogEntry(n.typeId);
+	if (!entry) {
+		return 0;
+	}
+	int rows = 0;
+	for (const auto& p : entry->params) {
+		if (std::string_view(p.type) != "string") {
+			++rows;
+		}
+	}
+	return rows;
+}
+
 float nodeWidth(const ecs::GraphNode& n) {
 	return isRefType(n.typeId) ? kRefNodeW : kNodeW;
 }
 
 float nodeHeight(const ecs::GraphNode& n) {
 	const int rows = std::max(1, static_cast<int>(n.pins.size()));
-	return kTitleH + kPad + static_cast<float>(rows) * kPinRow + kPad;
+	const int paramRows = inlineParamRows(n);
+	float h = kTitleH + kPad + static_cast<float>(rows) * kPinRow + kPad;
+	if (paramRows > 0) {
+		h += kParamGap + static_cast<float>(paramRows) * kParamRow;
+	}
+	return h;
 }
 
 ImVec2 pinPos(const ecs::GraphNode& n, const ecs::NodePin& pin, const ImVec2& origin, float zoom,
@@ -69,8 +101,7 @@ ImVec2 pinPos(const ecs::GraphNode& n, const ecs::NodePin& pin, const ImVec2& or
 	const float nw = nodeWidth(n);
 	const float x = (pin.kind == ecs::NodePinKind::In) ? 0.f : nw;
 	const float y = kTitleH + kPad + static_cast<float>(slot) * kPinRow + kPinRow * 0.5f;
-	return ImVec2(origin.x + (n.pos.x + pan.x + x) * zoom,
-				  origin.y + (n.pos.y + pan.y + y) * zoom);
+	return ImVec2(origin.x + (n.pos.x + pan.x + x) * zoom, origin.y + (n.pos.y + pan.y + y) * zoom);
 }
 
 ImVec2 nodeScreen(const ecs::GraphNode& n, const ImVec2& origin, float zoom, const glm::vec2& pan) {
@@ -85,6 +116,8 @@ NodeEditorWindow::NodeEditorWindow() : IWindow("Node Editor", ImGuiWindowFlags_M
 	setFileBrowserFilters(m_openRigDialog, {".rig"});
 	m_saveRigDialog.SetTitle("Save Scene");
 	setFileBrowserFilters(m_saveRigDialog, {".rig"});
+	installFileBrowserQuickAccess(m_openRigDialog);
+	installFileBrowserQuickAccess(m_saveRigDialog);
 }
 
 entt::entity NodeEditorWindow::findGraphEntity(MEcs& ecs) const {
@@ -100,6 +133,18 @@ entt::entity NodeEditorWindow::findGraphEntity(MEcs& ecs) const {
 		return e;
 	}
 	return entt::null;
+}
+
+entt::entity NodeEditorWindow::ensureGraph(MEcs& ecs) {
+	entt::entity e = findGraphEntity(ecs);
+	if (e != entt::null) {
+		return e;
+	}
+	e = rig::node::makeGraph(ecs, "node-graph");
+	ecs::CSelection sel;
+	sel.isSelected = true;
+	ecs.addComponent<ecs::CSelection>(e, sel);
+	return e;
 }
 
 void NodeEditorWindow::ensureDocument(MEcs& ecs, const std::string& pathHint) {
@@ -194,7 +239,7 @@ void NodeEditorWindow::drawAddNodeMenu(ecs::NodeGraphData& graph) {
 }
 
 void NodeEditorWindow::syncSelectionToGraph(ecs::CNodeGraph& root, entt::entity graphEntity,
-											  MEcs& ecs) {
+											MEcs& ecs) {
 	// Properties may Dive / clear selection on the graph component.
 	if (root.editDivePath != m_divePath) {
 		m_divePath = root.editDivePath;
@@ -236,16 +281,27 @@ void NodeEditorWindow::drawGroupMenuItems(ecs::CNodeGraph& root, ecs::NodeGraphD
 		m_multi = {id};
 	}
 	const bool canGroup = !m_multi.empty() || m_selectedNode != 0;
-	if (ImGui::MenuItem("Group selection", nullptr, false, canGroup)) {
+	auto collapseSelection = [&](std::string_view title) {
 		ecs::NodeGraphData* g = activeGraph(root);
 		std::vector<uint32_t> ids(m_multi.begin(), m_multi.end());
 		if (ids.empty() && m_selectedNode != 0) {
 			ids.push_back(m_selectedNode);
 		}
 		const uint32_t gid =
-			rig::node::createGroup(*g, ids, {-m_pan.x + 120.f, -m_pan.y + 80.f}, "Group");
+			rig::node::createGroup(*g, ids, {-m_pan.x + 120.f, -m_pan.y + 80.f}, title);
 		m_selectedNode = gid;
 		m_multi = {gid};
+	};
+	if (ImGui::MenuItem("Group selection", nullptr, false, canGroup)) {
+		collapseSelection("Group");
+	}
+	if (ImGui::MenuItem("Collapse to node", nullptr, false, canGroup)) {
+		// Export In / Export Out nodes in the selection define the interface.
+		collapseSelection("Node");
+	}
+	if (ImGui::IsItemHovered()) {
+		ImGui::SetTooltip("Wrap the selection in a single node.\n"
+						  "Add Export In / Export Out nodes to define its pins.");
 	}
 	if (auto* sel = active.findNode(m_selectedNode); sel && sel->isGroup()) {
 		if (ImGui::MenuItem("Ungroup")) {
@@ -285,9 +341,11 @@ void NodeEditorWindow::drawMenuBar(std::shared_ptr<rigProject> document, entt::e
 	}
 	if (ImGui::BeginMenu("File")) {
 		if (ImGui::MenuItem("Open Scene...", nullptr, false, document != nullptr)) {
+			applyFileBrowserLayout(m_openRigDialog);
 			m_openRigDialog.Open();
 		}
 		if (ImGui::MenuItem("Save Scene...", nullptr, false, document != nullptr)) {
+			applyFileBrowserLayout(m_saveRigDialog);
 			m_saveRigDialog.Open();
 		}
 		if (!document) {
@@ -392,9 +450,57 @@ void NodeEditorWindow::drawStatusBar(const ecs::NodeGraphData* active,
 	ImGui::PopStyleColor();
 }
 
+uint32_t NodeEditorWindow::spawnPropRef(ecs::NodeGraphData& graph, MEcs& ecs, uint32_t entityId,
+										const char* propName, int propType, glm::vec2 pos,
+										bool withLfo) {
+	if (!propName || propName[0] == '\0') {
+		return 0;
+	}
+	const entt::entity e = static_cast<entt::entity>(entityId);
+	std::string entName = ecs.entityName(e);
+	if (entName.empty()) {
+		entName = "entity";
+	}
+	const char* typeId = "ref.float";
+	if (propType == EPT_VEC2) {
+		typeId = "ref.vec2";
+	} else if (propType == EPT_COLOR || propType == EPT_VEC4) {
+		typeId = "ref.color";
+	}
+	const uint32_t nid = rig::node::spawnCatalogNode(graph, typeId, pos);
+	if (nid == 0) {
+		return 0;
+	}
+	if (auto* n = graph.findNode(nid)) {
+		rig::node::setParamString(*n, "entity", entName);
+		if (std::string_view(typeId) == "ref.color") {
+			// Empty prefix -> Color R/G/B; named colour props keep prefix.
+			if (std::string_view(propName) != "Color" &&
+				std::string_view(propName).find("Color ") != 0) {
+				rig::node::setParamString(*n, "prop", propName);
+			}
+		} else {
+			rig::node::setParamString(*n, "prop", propName);
+		}
+		n->title = entName + "." + std::string(propName);
+	}
+	if (withLfo && std::string_view(typeId) == "ref.float") {
+		const uint32_t lfoId =
+			rig::node::spawnCatalogNode(graph, "mod.lfo", pos + glm::vec2{-180.f, 0.f});
+		if (lfoId != 0) {
+			rig::node::tryLinkByName(graph, lfoId, "out", nid, "in");
+		}
+	}
+	m_selectedNode = nid;
+	m_multi = {nid};
+	return nid;
+}
+
 void NodeEditorWindow::drawCanvas(ecs::NodeGraphData& graph, const rig::node::EvalResult* ev) {
 	const ImVec2 canvasSize = ImGui::GetContentRegionAvail();
 	const ImVec2 origin = ImGui::GetCursorScreenPos();
+	// AllowOverlap lets the inline param widgets drawn on node bodies take hover.
+	ImGui::SetNextItemAllowOverlap();
 	ImGui::InvisibleButton("##node_canvas", canvasSize,
 						   ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle |
 							   ImGuiButtonFlags_MouseButtonRight);
@@ -406,6 +512,8 @@ void NodeEditorWindow::drawCanvas(ecs::NodeGraphData& graph, const rig::node::Ev
 		return glm::vec2((screen.x - origin.x) / m_zoom - m_pan.x,
 						 (screen.y - origin.y) / m_zoom - m_pan.y);
 	};
+	m_canvasCenter =
+		toGraph(ImVec2(origin.x + canvasSize.x * 0.5f, origin.y + canvasSize.y * 0.5f));
 
 	if (ImGui::BeginDragDropTarget()) {
 		if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kRigSceneEntityPayload)) {
@@ -419,45 +527,10 @@ void NodeEditorWindow::drawCanvas(ecs::NodeGraphData& graph, const rig::node::Ev
 			auto* engine = getEngine();
 			auto* ecs = engine ? engine->getECSManager() : nullptr;
 			if (ecs && prop && prop->name[0]) {
-				const entt::entity e = static_cast<entt::entity>(prop->entity);
-				std::string entName = ecs->entityName(e);
-				if (entName.empty()) {
-					entName = "entity";
-				}
-				const char* typeId = "ref.float";
-				if (prop->propType == EPT_VEC2) {
-					typeId = "ref.vec2";
-				} else if (prop->propType == EPT_COLOR || prop->propType == EPT_VEC4) {
-					typeId = "ref.color";
-				}
-				const glm::vec2 dropPos = toGraph(mouse);
-				const uint32_t nid = rig::node::spawnCatalogNode(graph, typeId, dropPos);
-				if (nid != 0) {
-					if (auto* n = graph.findNode(nid)) {
-						rig::node::setParamString(*n, "entity", entName);
-						if (std::string_view(typeId) == "ref.color") {
-							// Empty prefix -> Color R/G/B; named colour props keep prefix.
-							if (std::string_view(prop->name) != "Color" &&
-								std::string_view(prop->name).find("Color ") != 0) {
-								rig::node::setParamString(*n, "prop", prop->name);
-							}
-						} else {
-							rig::node::setParamString(*n, "prop", prop->name);
-						}
-						n->title = entName + "." + prop->name;
-					}
-					// Alt+drop: Modulate - spawn LFO and wire into the Ref (same addressing
-					// as rig.mod.binding: entity + property).
-					if (ImGui::GetIO().KeyAlt && std::string_view(typeId) == "ref.float") {
-						const uint32_t lfoId = rig::node::spawnCatalogNode(
-							graph, "mod.lfo", dropPos + glm::vec2{-180.f, 0.f});
-						if (lfoId != 0) {
-							rig::node::tryLinkByName(graph, lfoId, "out", nid, "in");
-						}
-					}
-					m_selectedNode = nid;
-					m_multi = {nid};
-				}
+				// Alt+drop: Modulate - spawn LFO and wire into the Ref (same addressing
+				// as rig.mod.binding: entity + property).
+				spawnPropRef(graph, *ecs, prop->entity, prop->name, prop->propType, toGraph(mouse),
+							 ImGui::GetIO().KeyAlt);
 			}
 		}
 		ImGui::EndDragDropTarget();
@@ -532,8 +605,7 @@ void NodeEditorWindow::drawCanvas(ecs::NodeGraphData& graph, const rig::node::Ev
 		const bool selected = node.id == m_selectedNode || m_multi.count(node.id);
 		const bool refNode = isRefType(node.typeId);
 		const ImU32 fill = node.isGroup() ? colGroup : (refNode ? colRef : colBody);
-		const ImU32 titleFill =
-			node.isGroup() ? colTitleGroup : (refNode ? colTitleRef : colTitle);
+		const ImU32 titleFill = node.isGroup() ? colTitleGroup : (refNode ? colTitleRef : colTitle);
 		dl->AddRectFilled(tl, br, fill, round);
 		dl->AddRect(tl, br, selected ? colSelect : colBorder, round, 0, selected ? 2.f : 1.f);
 		dl->AddRectFilled(tl, ImVec2(br.x, tl.y + kTitleH * m_zoom), titleFill, round);
@@ -558,9 +630,8 @@ void NodeEditorWindow::drawCanvas(ecs::NodeGraphData& graph, const rig::node::Ev
 			}
 			if (ev && ev->ok) {
 				const bool sinkOut = isSinkType(node.typeId);
-				const bool showVal =
-					pin.kind == ecs::NodePinKind::Out ||
-					(sinkOut && pin.kind == ecs::NodePinKind::In);
+				const bool showVal = pin.kind == ecs::NodePinKind::Out ||
+									 (sinkOut && pin.kind == ecs::NodePinKind::In);
 				if (showVal) {
 					const auto it = ev->pinValue.find(rig::node::pinKey(node.id, pin.id));
 					if (it != ev->pinValue.end()) {
@@ -595,6 +666,98 @@ void NodeEditorWindow::drawCanvas(ecs::NodeGraphData& graph, const rig::node::Ev
 					}
 				}
 			}
+		}
+
+		// Inline param editing on the node body (catalog-driven, matches the
+		// Properties inspector). String params (ref entity/prop) stay in Properties.
+		const int paramRows = inlineParamRows(node);
+		if (paramRows > 0 && m_zoom >= kInlineEditMinZoom) {
+			const int pinRows = std::max(1, static_cast<int>(node.pins.size()));
+			const float y0 =
+				tl.y +
+				(kTitleH + kPad + static_cast<float>(pinRows) * kPinRow + kParamGap) * m_zoom;
+			const float x0 = tl.x + kPad * m_zoom;
+			const float itemW = std::max(24.f, w - 2.f * kPad * m_zoom);
+			// Scale font + frame padding so widget rows track the zoomed node body.
+			ImGui::PushFont(nullptr, ImGui::GetFontSize() * m_zoom);
+			const ImVec2 basePad = ImGui::GetStyle().FramePadding;
+			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+								ImVec2(basePad.x * m_zoom, basePad.y * m_zoom));
+			ImGui::PushID(static_cast<int>(node.id));
+			auto paramRowPos = [&](int row) {
+				return ImVec2(x0, y0 + static_cast<float>(row) * kParamRow * m_zoom);
+			};
+			auto linkedIn = [&](const char* key) {
+				for (const auto& pin : node.pins) {
+					if (pin.kind != ecs::NodePinKind::In || pin.name != key) {
+						continue;
+					}
+					for (const auto& l : graph.links) {
+						if (l.toNode == node.id && l.toPin == pin.id) {
+							return true;
+						}
+					}
+				}
+				return false;
+			};
+			if (node.typeId == "color.value") {
+				ImGui::SetCursorScreenPos(paramRowPos(0));
+				float rgba[4] = {rig::node::getParamFloat(node, "r", 1.f),
+								 rig::node::getParamFloat(node, "g", 1.f),
+								 rig::node::getParamFloat(node, "b", 1.f),
+								 rig::node::getParamFloat(node, "a", 1.f)};
+				if (ImGui::ColorEdit4("##color", rgba,
+									  ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel)) {
+					rig::node::setParamFloat(node, "r", rgba[0]);
+					rig::node::setParamFloat(node, "g", rgba[1]);
+					rig::node::setParamFloat(node, "b", rgba[2]);
+					rig::node::setParamFloat(node, "a", rgba[3]);
+				}
+			} else if (node.typeId == "vec2.value") {
+				ImGui::SetCursorScreenPos(paramRowPos(0));
+				ImGui::SetNextItemWidth(itemW);
+				float xy[2] = {rig::node::getParamFloat(node, "x", 0.f),
+							   rig::node::getParamFloat(node, "y", 0.f)};
+				if (ImGui::DragFloat2("##xy", xy, 0.01f)) {
+					rig::node::setParamFloat(node, "x", xy[0]);
+					rig::node::setParamFloat(node, "y", xy[1]);
+				}
+			} else if (const auto* entry = rig::node::findCatalogEntry(node.typeId)) {
+				int row = 0;
+				for (const auto& p : entry->params) {
+					if (std::string_view(p.type) == "string") {
+						continue;
+					}
+					ImGui::SetCursorScreenPos(paramRowPos(row));
+					ImGui::PushID(p.key);
+					if (linkedIn(p.key)) {
+						ImGui::TextDisabled("%s: linked", p.label);
+					} else {
+						ImGui::SetNextItemWidth(itemW);
+						float v = rig::node::getParamFloat(node, p.key, p.def);
+						if (p.ui == 1 && p.comboLabels) {
+							int idx = static_cast<int>(std::lround(v));
+							const int lo = static_cast<int>(p.min);
+							const int hi = static_cast<int>(p.max);
+							idx = std::clamp(idx, lo, hi);
+							if (ImGui::Combo("##combo", &idx, p.comboLabels, hi - lo + 1)) {
+								rig::node::setParamFloat(node, p.key, static_cast<float>(idx));
+							}
+						} else {
+							char fmt[64];
+							std::snprintf(fmt, sizeof(fmt), "%s: %%.2f", p.label);
+							if (ImGui::DragFloat("##v", &v, p.speed, p.min, p.max, fmt)) {
+								rig::node::setParamFloat(node, p.key, v);
+							}
+						}
+					}
+					ImGui::PopID();
+					++row;
+				}
+			}
+			ImGui::PopID();
+			ImGui::PopStyleVar();
+			ImGui::PopFont();
 		}
 	}
 
@@ -672,13 +835,55 @@ void NodeEditorWindow::drawCanvas(ecs::NodeGraphData& graph, const rig::node::Ev
 		if (!hitPin && !hitNode) {
 			m_selectedNode = 0;
 			m_selectedPin = 0;
-			m_multi.clear();
+			if (!ImGui::GetIO().KeyCtrl) {
+				m_multi.clear();
+			}
 			m_linking = false;
 			m_dragNode = 0;
+			// Begin rubber-band selection from empty canvas.
+			m_boxSelecting = true;
+			m_boxAdditive = ImGui::GetIO().KeyCtrl;
+			m_boxStart = mouse;
 		}
 	}
 
-	if (m_dragNode != 0 && ImGui::IsMouseDragging(ImGuiMouseButton_Left) && !ImGui::GetIO().KeyAlt) {
+	if (m_boxSelecting) {
+		const ImVec2 mn(std::min(m_boxStart.x, mouse.x), std::min(m_boxStart.y, mouse.y));
+		const ImVec2 mx(std::max(m_boxStart.x, mouse.x), std::max(m_boxStart.y, mouse.y));
+		const float dxs = mouse.x - m_boxStart.x;
+		const float dys = mouse.y - m_boxStart.y;
+		const bool dragged = dxs * dxs + dys * dys > 16.f;
+		if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+			if (dragged) {
+				dl->AddRectFilled(mn, mx, ImGui::GetColorU32(ImGuiCol_SliderGrabActive, 0.15f));
+				dl->AddRect(mn, mx, colSelect, 0.f, 0, 1.f);
+			}
+		} else {
+			if (dragged) {
+				const glm::vec2 g0 = toGraph(mn);
+				const glm::vec2 g1 = toGraph(mx);
+				if (!m_boxAdditive) {
+					m_multi.clear();
+				}
+				for (const auto& node : graph.nodes) {
+					const float w = nodeWidth(node);
+					const float h = nodeHeight(node);
+					const bool overlap = node.pos.x <= g1.x && node.pos.x + w >= g0.x &&
+										 node.pos.y <= g1.y && node.pos.y + h >= g0.y;
+					if (overlap) {
+						m_multi.insert(node.id);
+					}
+				}
+				if (!m_multi.empty()) {
+					m_selectedNode = *m_multi.begin();
+				}
+			}
+			m_boxSelecting = false;
+		}
+	}
+
+	if (m_dragNode != 0 && ImGui::IsMouseDragging(ImGuiMouseButton_Left) &&
+		!ImGui::GetIO().KeyAlt) {
 		if (auto* n = graph.findNode(m_dragNode)) {
 			n->pos = toGraph(mouse) - m_dragOffset;
 		}
@@ -721,10 +926,19 @@ void NodeEditorWindow::drawCanvas(ecs::NodeGraphData& graph, const rig::node::Ev
 	}
 	if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
 		m_linking = false;
+		m_boxSelecting = false;
 	}
-	if (ImGui::IsKeyPressed(ImGuiKey_Delete) && m_selectedNode != 0) {
-		rig::node::removeNode(graph, m_selectedNode);
-		m_multi.erase(m_selectedNode);
+	// Delete every selected node (guard: not while typing in an inline widget).
+	if (ImGui::IsKeyPressed(ImGuiKey_Delete) && !ImGui::IsAnyItemActive() &&
+		(m_selectedNode != 0 || !m_multi.empty())) {
+		std::vector<uint32_t> doomed(m_multi.begin(), m_multi.end());
+		if (m_selectedNode != 0 && !m_multi.count(m_selectedNode)) {
+			doomed.push_back(m_selectedNode);
+		}
+		for (uint32_t id : doomed) {
+			rig::node::removeNode(graph, id);
+		}
+		m_multi.clear();
 		m_selectedNode = 0;
 		m_selectedPin = 0;
 	}
@@ -764,11 +978,49 @@ void NodeEditorWindow::renderContents() {
 					  ImGuiWindowFlags_NoScrollbar);
 
 	if (graphEntity == entt::null || !root || !active) {
-		ImGui::TextDisabled("No CNodeGraph in scene. File > Create demo graph.");
+		const ImVec2 avail = ImGui::GetContentRegionAvail();
+		const ImVec2 origin = ImGui::GetCursorScreenPos();
+		ImGui::InvisibleButton("##node_empty", avail);
+		if (ImGui::BeginDragDropTarget()) {
+			if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kRigScenePropPayload)) {
+				const auto* prop = static_cast<const RigScenePropPayload*>(payload->Data);
+				if (prop && prop->name[0]) {
+					const auto ge = ensureGraph(*ecs);
+					auto& g = ecs->getComponent<ecs::CNodeGraph>(ge);
+					spawnPropRef(g, *ecs, prop->entity, prop->name, prop->propType, {80.f, 80.f},
+								 ImGui::GetIO().KeyAlt);
+				}
+			}
+			if (const ImGuiPayload* payload =
+					ImGui::AcceptDragDropPayload(kRigSceneEntityPayload)) {
+				m_pendingRefEntity = *static_cast<const uint32_t*>(payload->Data);
+				m_pendingRefPos = {80.f, 80.f};
+				m_openRefPopup = true;
+				ensureGraph(*ecs);
+			}
+			ImGui::EndDragDropTarget();
+		}
+		ImGui::GetWindowDrawList()->AddText(
+			ImVec2(origin.x + 8.f, origin.y + 8.f), ImGui::GetColorU32(ImGuiCol_TextDisabled),
+			"No graph yet. Drop a filter property here, or File > Create demo graph.");
+
+		int spawned = 0;
+		for (const auto& req : takeScenePropPatchRequests()) {
+			const auto ge = ensureGraph(*ecs);
+			auto& g = ecs->getComponent<ecs::CNodeGraph>(ge);
+			const glm::vec2 pos =
+				glm::vec2{80.f, 80.f} + glm::vec2(24.f, 24.f) * static_cast<float>(spawned);
+			spawnPropRef(g, *ecs, req.entity, req.name.c_str(), req.propType, pos, req.withLfo);
+			++spawned;
+		}
+
 		ImGui::EndChild();
 		drawStatusBar(nullptr, nullptr);
 	} else {
 		m_time += engine->getDeltaTime();
+
+		// Keep group outer pins in lockstep with Export In / Export Out nodes.
+		rig::node::syncGroupInterfaces(*root);
 
 		rig::node::EvalContext ctx;
 		ctx.time = m_time;
@@ -778,6 +1030,16 @@ void NodeEditorWindow::renderContents() {
 
 		drawCanvas(*active, &ev);
 		syncSelectionToGraph(*root, graphEntity, *ecs);
+
+		// Right-click "Patch to Node Editor" requests from prop drag pins.
+		int spawned = 0;
+		for (const auto& req : takeScenePropPatchRequests()) {
+			const glm::vec2 pos = m_canvasCenter - glm::vec2(kNodeW * 0.5f, 0.f) +
+								  glm::vec2(24.f, 24.f) * static_cast<float>(spawned);
+			spawnPropRef(*active, *ecs, req.entity, req.name.c_str(), req.propType, pos,
+						 req.withLfo);
+			++spawned;
+		}
 
 		if (m_openRefPopup) {
 			ImGui::OpenPopup("##spawn_ref_from_scene");
@@ -791,8 +1053,7 @@ void NodeEditorWindow::renderContents() {
 			}
 			ImGui::Text("Ref -> %s", name.c_str());
 			auto spawnRef = [&](const char* typeId) {
-				const uint32_t id =
-					rig::node::spawnCatalogNode(*active, typeId, m_pendingRefPos);
+				const uint32_t id = rig::node::spawnCatalogNode(*active, typeId, m_pendingRefPos);
 				if (id != 0) {
 					if (auto* n = active->findNode(id)) {
 						rig::node::setParamString(*n, "entity", name);

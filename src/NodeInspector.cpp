@@ -7,8 +7,8 @@
 #include <cmath>
 #include <cstdio>
 #include <imgui.h>
-#include <string_view>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace rig {
@@ -83,7 +83,8 @@ void drawSceneModulateDrawer(rigkit::MEcs& ecs, entt::entity entity) {
 		ImGui::SameLine();
 		if (ImGui::SmallButton("Modulate")) {
 			const glm::vec2 pos{40.f + static_cast<float>(graph->nodes.size()) * 12.f, 40.f};
-			const uint32_t refId = spawnCatalogNode(*graph, "ref.float", pos + glm::vec2{180.f, 0.f});
+			const uint32_t refId =
+				spawnCatalogNode(*graph, "ref.float", pos + glm::vec2{180.f, 0.f});
 			const uint32_t lfoId = spawnCatalogNode(*graph, "mod.lfo", pos);
 			if (refId != 0) {
 				if (auto* n = graph->findNode(refId)) {
@@ -262,6 +263,15 @@ void drawGraphNodeInspector(rigkit::MEcs& ecs, entt::entity graphEntity) {
 		return;
 	}
 	for (const auto& p : entry->params) {
+		if (std::string_view(p.type) == "string") {
+			char buf[128];
+			const std::string cur = getParamString(*sel, p.key);
+			std::snprintf(buf, sizeof(buf), "%s", cur.c_str());
+			if (ImGui::InputText(p.label, buf, sizeof(buf))) {
+				setParamString(*sel, p.key, buf);
+			}
+			continue;
+		}
 		float v = getParamFloat(*sel, p.key, p.def);
 		if (p.ui == 1 && p.comboLabels) {
 			int idx = static_cast<int>(std::lround(v));
