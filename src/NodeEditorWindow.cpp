@@ -110,7 +110,8 @@ ImVec2 nodeScreen(const ecs::GraphNode& n, const ImVec2& origin, float zoom, con
 
 } // namespace
 
-NodeEditorWindow::NodeEditorWindow() : IWindow("Node Editor", ImGuiWindowFlags_MenuBar) {
+NodeEditorWindow::NodeEditorWindow(const std::string& title)
+	: IWindow(title, ImGuiWindowFlags_MenuBar) {
 	setCategory("Edit");
 	m_openRigDialog.SetTitle("Open Scene");
 	setFileBrowserFilters(m_openRigDialog, {".rig"});
@@ -118,6 +119,14 @@ NodeEditorWindow::NodeEditorWindow() : IWindow("Node Editor", ImGuiWindowFlags_M
 	setFileBrowserFilters(m_saveRigDialog, {".rig"});
 	installFileBrowserQuickAccess(m_openRigDialog);
 	installFileBrowserQuickAccess(m_saveRigDialog);
+}
+
+MEcs* NodeEditorWindow::resolveEcs() const {
+	if (m_ecsOverride) {
+		return m_ecsOverride;
+	}
+	auto* engine = getEngine();
+	return engine ? engine->getECSManager() : nullptr;
 }
 
 entt::entity NodeEditorWindow::findGraphEntity(MEcs& ecs) const {
@@ -251,7 +260,7 @@ void NodeEditorWindow::syncSelectionToGraph(ecs::CNodeGraph& root, entt::entity 
 	root.editDivePath = m_divePath;
 	root.editSelectedNode = m_selectedNode;
 
-	if (m_selectedNode != 0) {
+	if (m_selectedNode != 0 && !m_ecsOverride) {
 		selectEntityOnly(ecs, graphEntity);
 		if (auto* ui = getEngine() ? getEngine()->getUiManager() : nullptr) {
 			if (auto* wm = ui->getWindowManager()) {
@@ -361,14 +370,12 @@ void NodeEditorWindow::drawMenuBar(std::shared_ptr<rigProject> document, entt::e
 			m_multi.clear();
 		}
 		if (ImGui::MenuItem("Create demo graph", nullptr, false, graphEntity == entt::null)) {
-			if (auto* engine = getEngine()) {
-				if (auto* ecs = engine->getECSManager()) {
-					const auto e = rig::node::makeGraph(*ecs, "demo-graph");
-					rig::node::seedDemoGraph(ecs->getComponent<ecs::CNodeGraph>(e));
-					ecs::CSelection sel;
-					sel.isSelected = true;
-					ecs->addComponent<ecs::CSelection>(e, sel);
-				}
+			if (auto* ecs = resolveEcs()) {
+				const auto e = rig::node::makeGraph(*ecs, "demo-graph");
+				rig::node::seedDemoGraph(ecs->getComponent<ecs::CNodeGraph>(e));
+				ecs::CSelection sel;
+				sel.isSelected = true;
+				ecs->addComponent<ecs::CSelection>(e, sel);
 			}
 		}
 		if (active) {
@@ -457,6 +464,9 @@ uint32_t NodeEditorWindow::spawnPropRef(ecs::NodeGraphData& graph, MEcs& ecs, ui
 		return 0;
 	}
 	const entt::entity e = static_cast<entt::entity>(entityId);
+	if (!ecs.registry().valid(e)) {
+		return 0;
+	}
 	std::string entName = ecs.entityName(e);
 	if (entName.empty()) {
 		entName = "entity";
@@ -524,8 +534,7 @@ void NodeEditorWindow::drawCanvas(ecs::NodeGraphData& graph, const rig::node::Ev
 		}
 		if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kRigScenePropPayload)) {
 			const auto* prop = static_cast<const RigScenePropPayload*>(payload->Data);
-			auto* engine = getEngine();
-			auto* ecs = engine ? engine->getECSManager() : nullptr;
+			auto* ecs = resolveEcs();
 			if (ecs && prop && prop->name[0]) {
 				// Alt+drop: Modulate - spawn LFO and wire into the Ref (same addressing
 				// as rig.mod.binding: entity + property).
@@ -952,7 +961,7 @@ void NodeEditorWindow::renderContents() {
 	if (!engine) {
 		return;
 	}
-	auto* ecs = engine->getECSManager();
+	auto* ecs = resolveEcs();
 	if (!ecs) {
 		return;
 	}
@@ -1006,6 +1015,10 @@ void NodeEditorWindow::renderContents() {
 
 		int spawned = 0;
 		for (const auto& req : takeScenePropPatchRequests()) {
+			if (!ecs->registry().valid(static_cast<entt::entity>(req.entity))) {
+				requestScenePropPatch(req.entity, req.name.c_str(), req.propType, req.withLfo);
+				continue;
+			}
 			const auto ge = ensureGraph(*ecs);
 			auto& g = ecs->getComponent<ecs::CNodeGraph>(ge);
 			const glm::vec2 pos =
@@ -1034,6 +1047,10 @@ void NodeEditorWindow::renderContents() {
 		// Right-click "Patch to Node Editor" requests from prop drag pins.
 		int spawned = 0;
 		for (const auto& req : takeScenePropPatchRequests()) {
+			if (!ecs->registry().valid(static_cast<entt::entity>(req.entity))) {
+				requestScenePropPatch(req.entity, req.name.c_str(), req.propType, req.withLfo);
+				continue;
+			}
 			const glm::vec2 pos = m_canvasCenter - glm::vec2(kNodeW * 0.5f, 0.f) +
 								  glm::vec2(24.f, 24.f) * static_cast<float>(spawned);
 			spawnPropRef(*active, *ecs, req.entity, req.name.c_str(), req.propType, pos,

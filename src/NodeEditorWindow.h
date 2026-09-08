@@ -25,12 +25,21 @@ class rigProject;
  */
 class NodeEditorWindow : public IWindow {
   public:
-	NodeEditorWindow();
+	explicit NodeEditorWindow(const std::string& title = "Node Editor");
+
+	/**
+	 * @brief Edit graphs in @p ecs instead of the engine registry.
+	 * @details KidVJ decks each own an MEcs. Null restores the engine ECS.
+	 * Properties-window selection sync is skipped while an override is set.
+	 */
+	void setEcsOverride(MEcs* ecs) { m_ecsOverride = ecs; }
+	MEcs* ecsOverride() const { return m_ecsOverride; }
 
   protected:
 	void renderContents() override;
 
   private:
+	MEcs* resolveEcs() const;
 	entt::entity findGraphEntity(MEcs& ecs) const;
 	/// Create an empty `CNodeGraph` if the scene has none (drop / patch path).
 	entt::entity ensureGraph(MEcs& ecs);
@@ -73,6 +82,8 @@ class NodeEditorWindow : public IWindow {
 	uint32_t m_pendingRefEntity = 0;
 	glm::vec2 m_pendingRefPos{0.f, 0.f};
 	bool m_openRefPopup = false;
+
+	MEcs* m_ecsOverride = nullptr;
 
 	ImGui::FileBrowser m_openRigDialog{ImGuiFileBrowserFlags_CloseOnEsc};
 	ImGui::FileBrowser m_saveRigDialog{ImGuiFileBrowserFlags_EnterNewFilename |
