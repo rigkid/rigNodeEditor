@@ -28,16 +28,41 @@
 namespace rigkit {
 namespace {
 
-constexpr float kNodeW = 168.f;
-constexpr float kRefNodeW = 112.f;
-constexpr float kTitleH = 22.f;
-constexpr float kPinR = 5.f;
-constexpr float kPinRow = 20.f;
-constexpr float kPad = 8.f;
-constexpr float kParamRow = 22.f;
-constexpr float kParamGap = 6.f;
 /// Below this zoom inline widgets are unreadable - edit in Properties instead.
 constexpr float kInlineEditMinZoom = 0.7f;
+
+/**
+ * @brief Node canvas metrics derived from the current (DPI-scaled) font.
+ * @details Values are graph units (pixels at zoom 1). Everything is expressed
+ * in ems so layout tracks the theme font size and FontScaleDpi instead of
+ * assuming the 13px ImGui default.
+ */
+struct Metrics {
+	float em = 13.f; ///< ImGui::GetFontSize() at last refresh.
+	float nodeW = 168.f;
+	float refW = 112.f;
+	float titleH = 22.f;
+	float pinR = 5.f;
+	float pinRow = 20.f;
+	float pad = 8.f;
+	float paramRow = 22.f;
+	float paramGap = 6.f;
+
+	void refresh() {
+		em = ImGui::GetFontSize();
+		nodeW = std::ceil(em * 13.f);
+		refW = std::ceil(em * 8.75f);
+		titleH = std::ceil(em * 1.6f);
+		pinR = em * 0.38f;
+		pinRow = std::ceil(em * 1.55f);
+		pad = std::ceil(em * 0.6f);
+		paramRow = std::ceil(em + ImGui::GetStyle().FramePadding.y * 2.f + em * 0.3f);
+		paramGap = std::ceil(em * 0.45f);
+	}
+};
+
+/// Refreshed once per frame in renderContents (UI thread only).
+Metrics g_m;
 
 bool isRefType(std::string_view typeId) {
 	return typeId == "ref.float" || typeId == "ref.vec2" || typeId == "ref.color";
@@ -71,15 +96,20 @@ int inlineParamRows(const ecs::GraphNode& n) {
 }
 
 float nodeWidth(const ecs::GraphNode& n) {
-	return isRefType(n.typeId) ? kRefNodeW : kNodeW;
+	if (!isRefType(n.typeId)) {
+		return g_m.nodeW;
+	}
+	// Ref nodes carry long "entity.prop" titles - grow to fit, within reason.
+	const float text = ImGui::CalcTextSize(n.title.c_str()).x;
+	return std::clamp(text + 2.f * g_m.pad, g_m.refW, g_m.em * 22.f);
 }
 
 float nodeHeight(const ecs::GraphNode& n) {
 	const int rows = std::max(1, static_cast<int>(n.pins.size()));
 	const int paramRows = inlineParamRows(n);
-	float h = kTitleH + kPad + static_cast<float>(rows) * kPinRow + kPad;
+	float h = g_m.titleH + g_m.pad + static_cast<float>(rows) * g_m.pinRow + g_m.pad;
 	if (paramRows > 0) {
-		h += kParamGap + static_cast<float>(paramRows) * kParamRow;
+		h += g_m.paramGap + static_cast<float>(paramRows) * g_m.paramRow;
 	}
 	return h;
 }
@@ -100,7 +130,7 @@ ImVec2 pinPos(const ecs::GraphNode& n, const ecs::NodePin& pin, const ImVec2& or
 	}
 	const float nw = nodeWidth(n);
 	const float x = (pin.kind == ecs::NodePinKind::In) ? 0.f : nw;
-	const float y = kTitleH + kPad + static_cast<float>(slot) * kPinRow + kPinRow * 0.5f;
+	const float y = g_m.titleH + g_m.pad + static_cast<float>(slot) * g_m.pinRow + g_m.pinRow * 0.5f;
 	return ImVec2(origin.x + (n.pos.x + pan.x + x) * zoom, origin.y + (n.pos.y + pan.y + y) * zoom);
 }
 
@@ -495,8 +525,8 @@ uint32_t NodeEditorWindow::spawnPropRef(ecs::NodeGraphData& graph, MEcs& ecs, ui
 		n->title = entName + "." + std::string(propName);
 	}
 	if (withLfo && std::string_view(typeId) == "ref.float") {
-		const uint32_t lfoId =
-			rig::node::spawnCatalogNode(graph, "mod.lfo", pos + glm::vec2{-180.f, 0.f});
+		const uint32_t lfoId = rig::node::spawnCatalogNode(
+			graph, "mod.lfo", pos + glm::vec2{-(g_m.nodeW + g_m.pad * 2.f), 0.f});
 		if (lfoId != 0) {
 			rig::node::tryLinkByName(graph, lfoId, "out", nid, "in");
 		}
@@ -615,10 +645,22 @@ void NodeEditorWindow::drawCanvas(ecs::NodeGraphData& graph, const rig::node::Ev
 		const bool refNode = isRefType(node.typeId);
 		const ImU32 fill = node.isGroup() ? colGroup : (refNode ? colRef : colBody);
 		const ImU32 titleFill = node.isGroup() ? colTitleGroup : (refNode ? colTitleRef : colTitle);
+		// Node text is drawn at em * zoom so it tracks the scaled node body.
+		const float fontSz = g_m.em * m_zoom;
+		ImFont* font = ImGui::GetFont();
 		dl->AddRectFilled(tl, br, fill, round);
 		dl->AddRect(tl, br, selected ? colSelect : colBorder, round, 0, selected ? 2.f : 1.f);
-		dl->AddRectFilled(tl, ImVec2(br.x, tl.y + kTitleH * m_zoom), titleFill, round);
-		dl->AddText(ImVec2(tl.x + 6.f * m_zoom, tl.y + 3.f * m_zoom), colText, node.title.c_str());
+		dl->AddRectFilled(tl, ImVec2(br.x, tl.y + g_m.titleH * m_zoom), titleFill, round);
+		const ImVec2 titlePos(tl.x + g_m.pad * 0.75f * m_zoom,
+							  tl.y + (g_m.titleH - g_m.em) * 0.5f * m_zoom);
+		dl->PushClipRect(tl, ImVec2(br.x - 3.f * m_zoom, tl.y + g_m.titleH * m_zoom), true);
+		dl->AddText(font, fontSz, titlePos, colText, node.title.c_str());
+		dl->PopClipRect();
+		if (hovered && mouse.x >= tl.x && mouse.x <= br.x && mouse.y >= tl.y &&
+			mouse.y <= tl.y + g_m.titleH * m_zoom &&
+			ImGui::CalcTextSize(node.title.c_str()).x * m_zoom > w - g_m.pad * m_zoom) {
+			ImGui::SetTooltip("%s", node.title.c_str());
+		}
 
 		for (const auto& pin : node.pins) {
 			const ImVec2 pp = pinPos(node, pin, origin, m_zoom, m_pan);
@@ -628,14 +670,15 @@ void NodeEditorWindow::drawCanvas(ecs::NodeGraphData& graph, const rig::node::Ev
 			} else if (pin.type == "vec4") {
 				col = colPinC;
 			}
-			dl->AddCircleFilled(pp, kPinR * m_zoom, col);
+			dl->AddCircleFilled(pp, g_m.pinR * m_zoom, col);
 			const char* label = pin.name.c_str();
+			const float labelY = pp.y - g_m.em * 0.5f * m_zoom;
+			const float labelGap = (g_m.pinR + 3.f) * m_zoom;
 			if (pin.kind == ecs::NodePinKind::In) {
-				dl->AddText(ImVec2(pp.x + 8.f * m_zoom, pp.y - 7.f * m_zoom), colTextDim, label);
+				dl->AddText(font, fontSz, ImVec2(pp.x + labelGap, labelY), colTextDim, label);
 			} else {
-				const ImVec2 ts = ImGui::CalcTextSize(label);
-				dl->AddText(ImVec2(pp.x - 8.f * m_zoom - ts.x, pp.y - 7.f * m_zoom), colTextDim,
-							label);
+				const float tw = ImGui::CalcTextSize(label).x * m_zoom;
+				dl->AddText(font, fontSz, ImVec2(pp.x - labelGap - tw, labelY), colTextDim, label);
 			}
 			if (ev && ev->ok) {
 				const bool sinkOut = isSinkType(node.typeId);
@@ -656,11 +699,18 @@ void NodeEditorWindow::drawCanvas(ecs::NodeGraphData& graph, const rig::node::Ev
 								ty = "float";
 							}
 						}
+						// Values sit outside the node (right of Out pins, left of
+						// sink In pins) so they never collide with pin labels.
+						const bool rightSide = pin.kind == ecs::NodePinKind::Out;
 						if (ty == "vec2") {
 							std::snprintf(buf, sizeof(buf), "%.2f,%.2f", v.x, v.y);
 						} else if (ty == "vec4") {
-							dl->AddRectFilled(ImVec2(pp.x + 6.f * m_zoom, pp.y + 4.f * m_zoom),
-											  ImVec2(pp.x + 22.f * m_zoom, pp.y + 16.f * m_zoom),
+							const float sw = g_m.em * 1.3f * m_zoom;
+							const float sh = g_m.em * 0.85f * m_zoom;
+							const float sx =
+								rightSide ? pp.x + labelGap : pp.x - labelGap - sw;
+							dl->AddRectFilled(ImVec2(sx, pp.y - sh * 0.5f),
+											  ImVec2(sx + sw, pp.y + sh * 0.5f),
 											  IM_COL32(static_cast<int>(v.r * 255.f),
 													   static_cast<int>(v.g * 255.f),
 													   static_cast<int>(v.b * 255.f), 255));
@@ -669,8 +719,9 @@ void NodeEditorWindow::drawCanvas(ecs::NodeGraphData& graph, const rig::node::Ev
 							std::snprintf(buf, sizeof(buf), "%.2f", v.x);
 						}
 						if (buf[0]) {
-							dl->AddText(ImVec2(pp.x + 6.f * m_zoom, pp.y + 4.f * m_zoom), colValue,
-										buf);
+							const float tw = ImGui::CalcTextSize(buf).x * m_zoom;
+							const float vx = rightSide ? pp.x + labelGap : pp.x - labelGap - tw;
+							dl->AddText(font, fontSz, ImVec2(vx, labelY), colValue, buf);
 						}
 					}
 				}
@@ -683,18 +734,21 @@ void NodeEditorWindow::drawCanvas(ecs::NodeGraphData& graph, const rig::node::Ev
 		if (paramRows > 0 && m_zoom >= kInlineEditMinZoom) {
 			const int pinRows = std::max(1, static_cast<int>(node.pins.size()));
 			const float y0 =
-				tl.y +
-				(kTitleH + kPad + static_cast<float>(pinRows) * kPinRow + kParamGap) * m_zoom;
-			const float x0 = tl.x + kPad * m_zoom;
-			const float itemW = std::max(24.f, w - 2.f * kPad * m_zoom);
+				tl.y + (g_m.titleH + g_m.pad + static_cast<float>(pinRows) * g_m.pinRow +
+						g_m.paramGap) *
+						   m_zoom;
+			const float x0 = tl.x + g_m.pad * m_zoom;
+			const float itemW = std::max(24.f, w - 2.f * g_m.pad * m_zoom);
 			// Scale font + frame padding so widget rows track the zoomed node body.
-			ImGui::PushFont(nullptr, ImGui::GetFontSize() * m_zoom);
+			// PushFont takes the *unscaled* base size (FontScaleMain/Dpi are
+			// applied on top) - passing GetFontSize() here would double-scale.
+			ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * m_zoom);
 			const ImVec2 basePad = ImGui::GetStyle().FramePadding;
 			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
 								ImVec2(basePad.x * m_zoom, basePad.y * m_zoom));
 			ImGui::PushID(static_cast<int>(node.id));
 			auto paramRowPos = [&](int row) {
-				return ImVec2(x0, y0 + static_cast<float>(row) * kParamRow * m_zoom);
+				return ImVec2(x0, y0 + static_cast<float>(row) * g_m.paramRow * m_zoom);
 			};
 			auto linkedIn = [&](const char* key) {
 				for (const auto& pin : node.pins) {
@@ -799,7 +853,7 @@ void NodeEditorWindow::drawCanvas(ecs::NodeGraphData& graph, const rig::node::Ev
 				const ImVec2 pp = pinPos(node, pin, origin, m_zoom, m_pan);
 				const float dx = mouse.x - pp.x;
 				const float dy = mouse.y - pp.y;
-				if (dx * dx + dy * dy <= (kPinR * m_zoom + 4.f) * (kPinR * m_zoom + 4.f)) {
+				if (dx * dx + dy * dy <= (g_m.pinR * m_zoom + 4.f) * (g_m.pinR * m_zoom + 4.f)) {
 					hitPin = true;
 					m_selectedNode = node.id;
 					m_selectedPin = pin.id;
@@ -909,7 +963,7 @@ void NodeEditorWindow::drawCanvas(ecs::NodeGraphData& graph, const rig::node::Ev
 					const ImVec2 pp = pinPos(node, pin, origin, m_zoom, m_pan);
 					const float dx = mouse.x - pp.x;
 					const float dy = mouse.y - pp.y;
-					if (dx * dx + dy * dy <= (kPinR * m_zoom + 4.f) * (kPinR * m_zoom + 4.f)) {
+					if (dx * dx + dy * dy <= (g_m.pinR * m_zoom + 4.f) * (g_m.pinR * m_zoom + 4.f)) {
 						if (!rig::node::tryLink(graph, m_linkFromNode, m_linkFromPin, node.id,
 												pin.id)) {
 							spdlog::warn("[Node Editor] link rejected");
@@ -961,6 +1015,7 @@ void NodeEditorWindow::renderContents() {
 	if (!engine) {
 		return;
 	}
+	g_m.refresh();
 	auto* ecs = resolveEcs();
 	if (!ecs) {
 		return;
@@ -1051,7 +1106,7 @@ void NodeEditorWindow::renderContents() {
 				requestScenePropPatch(req.entity, req.name.c_str(), req.propType, req.withLfo);
 				continue;
 			}
-			const glm::vec2 pos = m_canvasCenter - glm::vec2(kNodeW * 0.5f, 0.f) +
+			const glm::vec2 pos = m_canvasCenter - glm::vec2(g_m.nodeW * 0.5f, 0.f) +
 								  glm::vec2(24.f, 24.f) * static_cast<float>(spawned);
 			spawnPropRef(*active, *ecs, req.entity, req.name.c_str(), req.propType, pos,
 						 req.withLfo);
