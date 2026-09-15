@@ -272,6 +272,24 @@ void drawGraphNodeInspector(rigkit::MEcs& ecs, entt::entity graphEntity) {
 			}
 			continue;
 		}
+		// Numeric params double as input pins - a connected pin overrides the knob.
+		bool linked = false;
+		for (const auto& pin : sel->pins) {
+			if (pin.kind != rigkit::ecs::NodePinKind::In || pin.name != p.key) {
+				continue;
+			}
+			for (const auto& l : graph->links) {
+				if (l.toNode == sel->id && l.toPin == pin.id) {
+					linked = true;
+					break;
+				}
+			}
+			break;
+		}
+		if (linked) {
+			ImGui::TextDisabled("%s: linked (driven by pin)", p.label);
+			continue;
+		}
 		float v = getParamFloat(*sel, p.key, p.def);
 		if (p.ui == 1 && p.comboLabels) {
 			int idx = static_cast<int>(std::lround(v));

@@ -35,6 +35,15 @@ class NodeEditorWindow : public IWindow {
 	void setEcsOverride(MEcs* ecs) { m_ecsOverride = ecs; }
 	MEcs* ecsOverride() const { return m_ecsOverride; }
 
+	/**
+	 * @brief Use a host eval instead of running the graph again in the editor.
+	 * @details KidVJ evaluates each deck in `update()`. Passing that result (and
+	 * the deck's time/scratch) keeps pin overlays in sync and skips a second
+	 * eval when not dived into a group. Nulls restore the editor-owned eval.
+	 */
+	void setHostEval(const rig::node::EvalResult* result, const float* time,
+					 std::unordered_map<uint32_t, float>* scratch);
+
   protected:
 	void renderContents() override;
 
@@ -63,6 +72,7 @@ class NodeEditorWindow : public IWindow {
 	char m_addFilter[64] = {};
 	uint32_t m_selectedNode = 0;
 	uint32_t m_selectedPin = 0;
+	uint32_t m_selectedLink = 0;
 	std::unordered_set<uint32_t> m_multi;
 	std::vector<uint32_t> m_divePath;
 	uint32_t m_dragNode = 0;
@@ -84,6 +94,9 @@ class NodeEditorWindow : public IWindow {
 	bool m_openRefPopup = false;
 
 	MEcs* m_ecsOverride = nullptr;
+	const rig::node::EvalResult* m_hostEval = nullptr;
+	const float* m_hostTime = nullptr;
+	std::unordered_map<uint32_t, float>* m_hostScratch = nullptr;
 
 	ImGui::FileBrowser m_openRigDialog{ImGuiFileBrowserFlags_CloseOnEsc};
 	ImGui::FileBrowser m_saveRigDialog{ImGuiFileBrowserFlags_EnterNewFilename |

@@ -104,8 +104,18 @@ float nodeWidth(const ecs::GraphNode& n) {
 	return std::clamp(text + 2.f * g_m.pad, g_m.refW, g_m.em * 22.f);
 }
 
+/// Pin rows = the taller of the In / Out columns (pins stack per side).
+int pinRowCount(const ecs::GraphNode& n) {
+	int ins = 0;
+	int outs = 0;
+	for (const auto& p : n.pins) {
+		(p.kind == ecs::NodePinKind::In ? ins : outs) += 1;
+	}
+	return std::max({1, ins, outs});
+}
+
 float nodeHeight(const ecs::GraphNode& n) {
-	const int rows = std::max(1, static_cast<int>(n.pins.size()));
+	const int rows = pinRowCount(n);
 	const int paramRows = inlineParamRows(n);
 	float h = g_m.titleH + g_m.pad + static_cast<float>(rows) * g_m.pinRow + g_m.pad;
 	if (paramRows > 0) {
@@ -138,6 +148,38 @@ ImVec2 nodeScreen(const ecs::GraphNode& n, const ImVec2& origin, float zoom, con
 	return ImVec2(origin.x + (n.pos.x + pan.x) * zoom, origin.y + (n.pos.y + pan.y) * zoom);
 }
 
+float segDistSq(const ImVec2& p, const ImVec2& a, const ImVec2& b) {
+	const float abx = b.x - a.x;
+	const float aby = b.y - a.y;
+	const float len2 = abx * abx + aby * aby;
+	float t = 0.f;
+	if (len2 > 1e-6f) {
+		t = std::clamp(((p.x - a.x) * abx + (p.y - a.y) * aby) / len2, 0.f, 1.f);
+	}
+	const float dx = p.x - (a.x + abx * t);
+	const float dy = p.y - (a.y + aby * t);
+	return dx * dx + dy * dy;
+}
+
+/// Squared distance from @p p to a cubic bezier, sampled - wire hit-testing.
+float bezierDistSq(const ImVec2& p, const ImVec2& p0, const ImVec2& c0, const ImVec2& c1,
+				   const ImVec2& p1) {
+	constexpr int kSteps = 24;
+	ImVec2 prev = p0;
+	float best = segDistSq(p, p0, p0);
+	for (int i = 1; i <= kSteps; ++i) {
+		const float t = static_cast<float>(i) / kSteps;
+		const float u = 1.f - t;
+		const ImVec2 pt(u * u * u * p0.x + 3.f * u * u * t * c0.x + 3.f * u * t * t * c1.x +
+							t * t * t * p1.x,
+						u * u * u * p0.y + 3.f * u * u * t * c0.y + 3.f * u * t * t * c1.y +
+							t * t * t * p1.y);
+		best = std::min(best, segDistSq(p, prev, pt));
+		prev = pt;
+	}
+	return best;
+}
+
 } // namespace
 
 NodeEditorWindow::NodeEditorWindow(const std::string& title)
@@ -149,6 +191,13 @@ NodeEditorWindow::NodeEditorWindow(const std::string& title)
 	setFileBrowserFilters(m_saveRigDialog, {".rig"});
 	installFileBrowserQuickAccess(m_openRigDialog);
 	installFileBrowserQuickAccess(m_saveRigDialog);
+}
+
+void NodeEditorWindow::setHostEval(const rig::node::EvalResult* result, const float* time,
+								   std::unordered_map<uint32_t, float>* scratch) {
+	m_hostEval = result;
+	m_hostTime = time;
+	m_hostScratch = scratch;
 }
 
 MEcs* NodeEditorWindow::resolveEcs() const {
@@ -566,10 +615,16 @@ void NodeEditorWindow::drawCanvas(ecs::NodeGraphData& graph, const rig::node::Ev
 			const auto* prop = static_cast<const RigScenePropPayload*>(payload->Data);
 			auto* ecs = resolveEcs();
 			if (ecs && prop && prop->name[0]) {
-				// Alt+drop: Modulate - spawn LFO and wire into the Ref (same addressing
-				// as rig.mod.binding: entity + property).
-				spawnPropRef(graph, *ecs, prop->entity, prop->name, prop->propType, toGraph(mouse),
-							 ImGui::GetIO().KeyAlt);
+				if (prop->ecsTag && prop->ecsTag != ecs) {
+					spdlog::warn("[Node Editor] '{}' belongs to another scene/deck - "
+								 "drop it on that deck's patch editor",
+								 prop->name);
+				} else {
+					// Alt+drop: Modulate - spawn LFO and wire into the Ref (same
+					// addressing as rig.mod.binding: entity + property).
+					spawnPropRef(graph, *ecs, prop->entity, prop->name, prop->propType,
+								 toGraph(mouse), ImGui::GetIO().KeyAlt);
+				}
 			}
 		}
 		ImGui::EndDragDropTarget();
@@ -610,6 +665,10 @@ void NodeEditorWindow::drawCanvas(ecs::NodeGraphData& graph, const rig::node::Ev
 		m_zoom = std::clamp(m_zoom + ImGui::GetIO().MouseWheel * 0.1f, 0.4f, 2.5f);
 	}
 
+	// Wires: hovered wires highlight (click selects, Del / right-click removes).
+	uint32_t hoveredLink = 0;
+	const float wireHitR = std::max(6.f, 5.f * m_zoom);
+	float wireHitBest = wireHitR * wireHitR;
 	for (const auto& link : graph.links) {
 		const auto* a = graph.findNode(link.fromNode);
 		const auto* b = graph.findNode(link.toNode);
@@ -621,8 +680,29 @@ void NodeEditorWindow::drawCanvas(ecs::NodeGraphData& graph, const rig::node::Ev
 		const ImVec2 p0 = pinPos(*a, *pa, origin, m_zoom, m_pan);
 		const ImVec2 p1 = pinPos(*b, *pb, origin, m_zoom, m_pan);
 		const float dx = std::max(40.f * m_zoom, std::fabs(p1.x - p0.x) * 0.5f);
-		dl->AddBezierCubic(p0, ImVec2(p0.x + dx, p0.y), ImVec2(p1.x - dx, p1.y), p1, colLink,
-						   2.0f * m_zoom);
+		if (hovered && !m_linking) {
+			const float d2 =
+				bezierDistSq(mouse, p0, ImVec2(p0.x + dx, p0.y), ImVec2(p1.x - dx, p1.y), p1);
+			if (d2 <= wireHitBest) {
+				wireHitBest = d2;
+				hoveredLink = link.id;
+			}
+		}
+	}
+	for (const auto& link : graph.links) {
+		const auto* a = graph.findNode(link.fromNode);
+		const auto* b = graph.findNode(link.toNode);
+		const auto* pa = graph.findPin(link.fromNode, link.fromPin);
+		const auto* pb = graph.findPin(link.toNode, link.toPin);
+		if (!a || !b || !pa || !pb) {
+			continue;
+		}
+		const ImVec2 p0 = pinPos(*a, *pa, origin, m_zoom, m_pan);
+		const ImVec2 p1 = pinPos(*b, *pb, origin, m_zoom, m_pan);
+		const float dx = std::max(40.f * m_zoom, std::fabs(p1.x - p0.x) * 0.5f);
+		const bool hot = link.id == m_selectedLink || link.id == hoveredLink;
+		dl->AddBezierCubic(p0, ImVec2(p0.x + dx, p0.y), ImVec2(p1.x - dx, p1.y), p1,
+						   hot ? colLinkActive : colLink, (hot ? 3.f : 2.f) * m_zoom);
 	}
 
 	if (m_linking) {
@@ -732,7 +812,7 @@ void NodeEditorWindow::drawCanvas(ecs::NodeGraphData& graph, const rig::node::Ev
 		// Properties inspector). String params (ref entity/prop) stay in Properties.
 		const int paramRows = inlineParamRows(node);
 		if (paramRows > 0 && m_zoom >= kInlineEditMinZoom) {
-			const int pinRows = std::max(1, static_cast<int>(node.pins.size()));
+			const int pinRows = pinRowCount(node);
 			const float y0 =
 				tl.y + (g_m.titleH + g_m.pad + static_cast<float>(pinRows) * g_m.pinRow +
 						g_m.paramGap) *
@@ -857,11 +937,29 @@ void NodeEditorWindow::drawCanvas(ecs::NodeGraphData& graph, const rig::node::Ev
 					hitPin = true;
 					m_selectedNode = node.id;
 					m_selectedPin = pin.id;
+					m_selectedLink = 0;
 					if (!m_linking) {
 						if (pin.kind == ecs::NodePinKind::Out) {
 							m_linking = true;
 							m_linkFromNode = node.id;
 							m_linkFromPin = pin.id;
+						} else {
+							// Pick up an existing wire: detach it and keep
+							// linking from its source (drop elsewhere to rewire,
+							// release on empty canvas to disconnect).
+							uint32_t pickId = 0;
+							for (const auto& l : graph.links) {
+								if (l.toNode == node.id && l.toPin == pin.id) {
+									pickId = l.id;
+									m_linkFromNode = l.fromNode;
+									m_linkFromPin = l.fromPin;
+									break;
+								}
+							}
+							if (pickId != 0) {
+								rig::node::removeLink(graph, pickId);
+								m_linking = true;
+							}
 						}
 					} else if (pin.kind == ecs::NodePinKind::In) {
 						if (!rig::node::tryLink(graph, m_linkFromNode, m_linkFromPin, node.id,
@@ -881,6 +979,7 @@ void NodeEditorWindow::drawCanvas(ecs::NodeGraphData& graph, const rig::node::Ev
 				hitNode = true;
 				m_selectedNode = node.id;
 				m_selectedPin = 0;
+				m_selectedLink = 0;
 				if (ImGui::GetIO().KeyCtrl) {
 					if (m_multi.count(node.id)) {
 						m_multi.erase(node.id);
@@ -903,11 +1002,30 @@ void NodeEditorWindow::drawCanvas(ecs::NodeGraphData& graph, const rig::node::Ev
 			}
 			m_linking = false;
 			m_dragNode = 0;
-			// Begin rubber-band selection from empty canvas.
-			m_boxSelecting = true;
-			m_boxAdditive = ImGui::GetIO().KeyCtrl;
-			m_boxStart = mouse;
+			if (hoveredLink != 0) {
+				// Click a wire to select it (Del disconnects).
+				m_selectedLink = hoveredLink;
+			} else {
+				m_selectedLink = 0;
+				// Begin rubber-band selection from empty canvas.
+				m_boxSelecting = true;
+				m_boxAdditive = ImGui::GetIO().KeyCtrl;
+				m_boxStart = mouse;
+			}
 		}
+	}
+
+	// Right-click a wire: context disconnect.
+	if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right) && hoveredLink != 0) {
+		m_selectedLink = hoveredLink;
+		ImGui::OpenPopup("##link_ctx");
+	}
+	if (ImGui::BeginPopup("##link_ctx")) {
+		if (ImGui::MenuItem("Disconnect")) {
+			rig::node::removeLink(graph, m_selectedLink);
+			m_selectedLink = 0;
+		}
+		ImGui::EndPopup();
 	}
 
 	if (m_boxSelecting) {
@@ -990,20 +1108,26 @@ void NodeEditorWindow::drawCanvas(ecs::NodeGraphData& graph, const rig::node::Ev
 	if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
 		m_linking = false;
 		m_boxSelecting = false;
+		m_selectedLink = 0;
 	}
-	// Delete every selected node (guard: not while typing in an inline widget).
-	if (ImGui::IsKeyPressed(ImGuiKey_Delete) && !ImGui::IsAnyItemActive() &&
-		(m_selectedNode != 0 || !m_multi.empty())) {
-		std::vector<uint32_t> doomed(m_multi.begin(), m_multi.end());
-		if (m_selectedNode != 0 && !m_multi.count(m_selectedNode)) {
-			doomed.push_back(m_selectedNode);
+	// Delete the selected wire, else every selected node (guard: not while
+	// typing in an inline widget).
+	if (ImGui::IsKeyPressed(ImGuiKey_Delete) && !ImGui::IsAnyItemActive()) {
+		if (m_selectedLink != 0) {
+			rig::node::removeLink(graph, m_selectedLink);
+			m_selectedLink = 0;
+		} else if (m_selectedNode != 0 || !m_multi.empty()) {
+			std::vector<uint32_t> doomed(m_multi.begin(), m_multi.end());
+			if (m_selectedNode != 0 && !m_multi.count(m_selectedNode)) {
+				doomed.push_back(m_selectedNode);
+			}
+			for (uint32_t id : doomed) {
+				rig::node::removeNode(graph, id);
+			}
+			m_multi.clear();
+			m_selectedNode = 0;
+			m_selectedPin = 0;
 		}
-		for (uint32_t id : doomed) {
-			rig::node::removeNode(graph, id);
-		}
-		m_multi.clear();
-		m_selectedNode = 0;
-		m_selectedPin = 0;
 	}
 
 	dl->PopClipRect();
@@ -1048,7 +1172,7 @@ void NodeEditorWindow::renderContents() {
 		if (ImGui::BeginDragDropTarget()) {
 			if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kRigScenePropPayload)) {
 				const auto* prop = static_cast<const RigScenePropPayload*>(payload->Data);
-				if (prop && prop->name[0]) {
+				if (prop && prop->name[0] && (!prop->ecsTag || prop->ecsTag == ecs)) {
 					const auto ge = ensureGraph(*ecs);
 					auto& g = ecs->getComponent<ecs::CNodeGraph>(ge);
 					spawnPropRef(g, *ecs, prop->entity, prop->name, prop->propType, {80.f, 80.f},
@@ -1069,9 +1193,10 @@ void NodeEditorWindow::renderContents() {
 			"No graph yet. Drop a filter property here, or File > Create demo graph.");
 
 		int spawned = 0;
-		for (const auto& req : takeScenePropPatchRequests()) {
+		for (const auto& req : takeScenePropPatchRequests(ecs)) {
 			if (!ecs->registry().valid(static_cast<entt::entity>(req.entity))) {
-				requestScenePropPatch(req.entity, req.name.c_str(), req.propType, req.withLfo);
+				requestScenePropPatch(req.entity, req.name.c_str(), req.propType, req.withLfo,
+									  req.ecsTag);
 				continue;
 			}
 			const auto ge = ensureGraph(*ecs);
@@ -1085,25 +1210,40 @@ void NodeEditorWindow::renderContents() {
 		ImGui::EndChild();
 		drawStatusBar(nullptr, nullptr);
 	} else {
-		m_time += engine->getDeltaTime();
+		if (m_hostTime) {
+			m_time = *m_hostTime;
+		} else {
+			m_time += engine->getDeltaTime();
+		}
 
 		// Keep group outer pins in lockstep with Export In / Export Out nodes.
 		rig::node::syncGroupInterfaces(*root);
+		// Add param input pins missing on nodes from older saves.
+		rig::node::syncCatalogPins(*root);
 
 		rig::node::EvalContext ctx;
 		ctx.time = m_time;
 		ctx.dt = engine->getDeltaTime();
-		ctx.scratch = &m_evalScratch;
-		const auto ev = rig::node::evaluateAlongDive(*root, m_divePath, ctx);
+		ctx.scratch = m_hostScratch ? m_hostScratch : &m_evalScratch;
+		rig::node::EvalResult localEv;
+		const rig::node::EvalResult* ev = nullptr;
+		if (m_hostEval && m_divePath.empty()) {
+			ev = m_hostEval;
+		} else {
+			localEv = rig::node::evaluateAlongDive(*root, m_divePath, ctx);
+			ev = &localEv;
+		}
 
-		drawCanvas(*active, &ev);
+		drawCanvas(*active, ev);
 		syncSelectionToGraph(*root, graphEntity, *ecs);
 
-		// Right-click "Patch to Node Editor" requests from prop drag pins.
+		// Right-click "Patch to Node Editor" requests from prop drag pins
+		// (tagged requests only reach the editor bound to that deck's ECS).
 		int spawned = 0;
-		for (const auto& req : takeScenePropPatchRequests()) {
+		for (const auto& req : takeScenePropPatchRequests(ecs)) {
 			if (!ecs->registry().valid(static_cast<entt::entity>(req.entity))) {
-				requestScenePropPatch(req.entity, req.name.c_str(), req.propType, req.withLfo);
+				requestScenePropPatch(req.entity, req.name.c_str(), req.propType, req.withLfo,
+									  req.ecsTag);
 				continue;
 			}
 			const glm::vec2 pos = m_canvasCenter - glm::vec2(g_m.nodeW * 0.5f, 0.f) +
@@ -1154,7 +1294,7 @@ void NodeEditorWindow::renderContents() {
 		}
 
 		ImGui::EndChild();
-		drawStatusBar(active, &ev);
+		drawStatusBar(active, ev);
 	}
 
 	m_openRigDialog.Display();
