@@ -4,7 +4,7 @@
 
 ImGui node graph editor over **rigNodeComponent** `CNodeGraph`.
 
-Complete built-in catalog: Values, Maths, Modulators, Logic, Vectors, Color, Output - search in **Add node**, typed pins (green/blue/pink), color picker, live eval, Open/Save `.rig`.
+Complete built-in catalog: Values, Maths, Modulators, Logic, Vectors, Color, Output - search in **Add node**, typed pins (green/blue/pink), color picker, live eval, Open/Save `.rig`. **Ctrl-P** opens a Patch bay (From / Destination rows) over the same graph.
 
 Hero seeds a color-wash graph (LFO to Map to Brightness) that tints a scene circle via Color Ref.
 

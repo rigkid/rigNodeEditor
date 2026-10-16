@@ -9,6 +9,7 @@
 #include "MWindow.h"
 #include "NodeCatalog.h"
 #include "NodeGraph.h"
+#include "NodePatch.h"
 #include "PropEditors.h"
 #include "PropertiesWindow.h"
 #include "SceneDragPayload.h"
@@ -21,6 +22,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <imgui_internal.h>
 #include <spdlog/spdlog.h>
 #include <string>
 #include <string_view>
@@ -30,6 +32,10 @@ namespace {
 
 /// Below this zoom inline widgets are unreadable - edit in Properties instead.
 constexpr float kInlineEditMinZoom = 0.7f;
+/// Wheel zoom range. A tight clamp here is a near/far clip: the patch cannot
+/// be framed, and a single pin cannot be opened up.
+constexpr float kZoomMin = 0.05f;
+constexpr float kZoomMax = 8.f;
 
 /**
  * @brief Node canvas metrics derived from the current (DPI-scaled) font.
@@ -140,7 +146,8 @@ ImVec2 pinPos(const ecs::GraphNode& n, const ecs::NodePin& pin, const ImVec2& or
 	}
 	const float nw = nodeWidth(n);
 	const float x = (pin.kind == ecs::NodePinKind::In) ? 0.f : nw;
-	const float y = g_m.titleH + g_m.pad + static_cast<float>(slot) * g_m.pinRow + g_m.pinRow * 0.5f;
+	const float y =
+		g_m.titleH + g_m.pad + static_cast<float>(slot) * g_m.pinRow + g_m.pinRow * 0.5f;
 	return ImVec2(origin.x + (n.pos.x + pan.x + x) * zoom, origin.y + (n.pos.y + pan.y + y) * zoom);
 }
 
@@ -170,10 +177,9 @@ float bezierDistSq(const ImVec2& p, const ImVec2& p0, const ImVec2& c0, const Im
 	for (int i = 1; i <= kSteps; ++i) {
 		const float t = static_cast<float>(i) / kSteps;
 		const float u = 1.f - t;
-		const ImVec2 pt(u * u * u * p0.x + 3.f * u * u * t * c0.x + 3.f * u * t * t * c1.x +
-							t * t * t * p1.x,
-						u * u * u * p0.y + 3.f * u * u * t * c0.y + 3.f * u * t * t * c1.y +
-							t * t * t * p1.y);
+		const ImVec2 pt(
+			u * u * u * p0.x + 3.f * u * u * t * c0.x + 3.f * u * t * t * c1.x + t * t * t * p1.x,
+			u * u * u * p0.y + 3.f * u * u * t * c0.y + 3.f * u * t * t * c1.y + t * t * t * p1.y);
 		best = std::min(best, segDistSq(p, prev, pt));
 		prev = pt;
 	}
@@ -183,7 +189,8 @@ float bezierDistSq(const ImVec2& p, const ImVec2& p0, const ImVec2& c0, const Im
 } // namespace
 
 NodeEditorWindow::NodeEditorWindow(const std::string& title)
-	: IWindow(title, ImGuiWindowFlags_MenuBar) {
+	: IWindow(title, ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoScrollbar |
+						 ImGuiWindowFlags_NoScrollWithMouse) {
 	setCategory("Edit");
 	m_openRigDialog.SetTitle("Open Scene");
 	setFileBrowserFilters(m_openRigDialog, {".rig"});
@@ -488,7 +495,8 @@ void NodeEditorWindow::drawStatusBar(const ecs::NodeGraphData* active,
 		ImGui::PopStyleColor();
 		return;
 	}
-	ImGui::Text("Nodes %zu  Links %zu  t=%.2f", active->nodes.size(), active->links.size(), m_time);
+	ImGui::Text("Nodes %zu  Links %zu  t=%.2f  zoom %.0f%%", active->nodes.size(),
+				active->links.size(), m_time, m_zoom * 100.f);
 	if (!m_divePath.empty()) {
 		ImGui::SameLine();
 		ImGui::TextDisabled(" | dive %zu", m_divePath.size());
@@ -538,51 +546,73 @@ void NodeEditorWindow::drawStatusBar(const ecs::NodeGraphData* active,
 
 uint32_t NodeEditorWindow::spawnPropRef(ecs::NodeGraphData& graph, MEcs& ecs, uint32_t entityId,
 										const char* propName, int propType, glm::vec2 pos,
-										bool withLfo) {
-	if (!propName || propName[0] == '\0') {
-		return 0;
+										bool withLfo, const char* sourceType, const char* sourcePin,
+										bool hasMapRange, float mapOutMin, float mapOutMax) {
+	const uint32_t nid =
+		node_ui::spawnPropRef(graph, ecs, entityId, propName, propType, pos, withLfo, sourceType,
+							  sourcePin, hasMapRange, mapOutMin, mapOutMax);
+	if (nid != 0) {
+		m_selectedNode = nid;
+		m_multi = {nid};
 	}
-	const entt::entity e = static_cast<entt::entity>(entityId);
-	if (!ecs.registry().valid(e)) {
-		return 0;
-	}
-	std::string entName = ecs.entityName(e);
-	if (entName.empty()) {
-		entName = "entity";
-	}
-	const char* typeId = "ref.float";
-	if (propType == EPT_VEC2) {
-		typeId = "ref.vec2";
-	} else if (propType == EPT_COLOR || propType == EPT_VEC4) {
-		typeId = "ref.color";
-	}
-	const uint32_t nid = rig::node::spawnCatalogNode(graph, typeId, pos);
-	if (nid == 0) {
-		return 0;
-	}
-	if (auto* n = graph.findNode(nid)) {
-		rig::node::setParamString(*n, "entity", entName);
-		if (std::string_view(typeId) == "ref.color") {
-			// Empty prefix -> Color R/G/B; named colour props keep prefix.
-			if (std::string_view(propName) != "Color" &&
-				std::string_view(propName).find("Color ") != 0) {
-				rig::node::setParamString(*n, "prop", propName);
-			}
-		} else {
-			rig::node::setParamString(*n, "prop", propName);
-		}
-		n->title = entName + "." + std::string(propName);
-	}
-	if (withLfo && std::string_view(typeId) == "ref.float") {
-		const uint32_t lfoId = rig::node::spawnCatalogNode(
-			graph, "mod.lfo", pos + glm::vec2{-(g_m.nodeW + g_m.pad * 2.f), 0.f});
-		if (lfoId != 0) {
-			rig::node::tryLinkByName(graph, lfoId, "out", nid, "in");
-		}
-	}
-	m_selectedNode = nid;
-	m_multi = {nid};
 	return nid;
+}
+
+void NodeEditorWindow::applyPendingPatchRequests() {
+	if (ImGui::GetCurrentContext() == nullptr) {
+		return;
+	}
+	auto* ecs = resolveEcs();
+	if (!ecs) {
+		return;
+	}
+	const bool hadGraph = findGraphEntity(*ecs) != entt::null;
+	ecs::NodeGraphData* active = nullptr;
+	auto requeue = [](const ScenePropPatchRequest& req) {
+		requestScenePropPatch(req.entity, req.name.c_str(), req.propType, req.withLfo, req.ecsTag,
+							  req.sourceType.c_str(), req.sourcePin.c_str(), req.hasMapRange,
+							  req.mapOutMin, req.mapOutMax, req.unpatch);
+	};
+	int spawned = 0;
+	for (const auto& req : takeScenePropPatchRequests(ecs)) {
+		if (req.unpatch) {
+			if (!ecs->registry().valid(static_cast<entt::entity>(req.entity))) {
+				continue;
+			}
+			const entt::entity ge = findGraphEntity(*ecs);
+			if (ge == entt::null || !ecs->hasComponent<ecs::CNodeGraph>(ge)) {
+				continue;
+			}
+			node_ui::unpatchProp(ecs->getComponent<ecs::CNodeGraph>(ge), *ecs, req.entity,
+								 req.name.c_str(), req.propType);
+			continue;
+		}
+		if (!ecs->registry().valid(static_cast<entt::entity>(req.entity))) {
+			requeue(req);
+			continue;
+		}
+		if (!active) {
+			const entt::entity ge = ensureGraph(*ecs);
+			if (ge == entt::null || !ecs->hasComponent<ecs::CNodeGraph>(ge)) {
+				requeue(req);
+				continue;
+			}
+			active = activeGraph(ecs->getComponent<ecs::CNodeGraph>(ge));
+		}
+		if (!active) {
+			requeue(req);
+			continue;
+		}
+		glm::vec2 pos = node_ui::nextSpawnPos(*active);
+		if (isVisible() && hadGraph) {
+			pos = m_canvasCenter - glm::vec2(g_m.nodeW * 0.5f, 0.f);
+		}
+		pos += glm::vec2(24.f, 24.f) * static_cast<float>(spawned);
+		spawnPropRef(*active, *ecs, req.entity, req.name.c_str(), req.propType, pos, req.withLfo,
+					 req.sourceType.c_str(), req.sourcePin.c_str(), req.hasMapRange, req.mapOutMin,
+					 req.mapOutMax);
+		++spawned;
+	}
 }
 
 void NodeEditorWindow::drawCanvas(ecs::NodeGraphData& graph, const rig::node::EvalResult* ev) {
@@ -601,6 +631,22 @@ void NodeEditorWindow::drawCanvas(ecs::NodeGraphData& graph, const rig::node::Ev
 		return glm::vec2((screen.x - origin.x) / m_zoom - m_pan.x,
 						 (screen.y - origin.y) / m_zoom - m_pan.y);
 	};
+	// Pan/zoom before hit-testing. Zoom stays under the cursor. The child must
+	// not also scroll: inline widgets used to grow the scroll range, and the
+	// window clip then ate the graph while the wheel both zoomed and panned.
+	ImGuiWindow* canvasWin = ImGui::GetCurrentWindow();
+	const ImVec2 canvasCursorMax = canvasWin->DC.CursorMaxPos;
+	if (hovered && (ImGui::IsMouseDragging(ImGuiMouseButton_Middle) ||
+					(ImGui::GetIO().KeyAlt && ImGui::IsMouseDragging(ImGuiMouseButton_Left)))) {
+		m_pan.x += ImGui::GetIO().MouseDelta.x / std::max(m_zoom, 0.001f);
+		m_pan.y += ImGui::GetIO().MouseDelta.y / std::max(m_zoom, 0.001f);
+	}
+	if (hovered && ImGui::GetIO().MouseWheel != 0.f && !ImGui::IsAnyItemActive()) {
+		const glm::vec2 before = toGraph(mouse);
+		m_zoom = std::clamp(m_zoom * std::pow(1.1f, ImGui::GetIO().MouseWheel), kZoomMin, kZoomMax);
+		m_pan.x = (mouse.x - origin.x) / m_zoom - before.x;
+		m_pan.y = (mouse.y - origin.y) / m_zoom - before.y;
+	}
 	m_canvasCenter =
 		toGraph(ImVec2(origin.x + canvasSize.x * 0.5f, origin.y + canvasSize.y * 0.5f));
 
@@ -653,17 +699,11 @@ void NodeEditorWindow::drawCanvas(ecs::NodeGraphData& graph, const rig::node::Ev
 	// ChildBg is often transparent in themes - fall back to PopupBg for node bodies.
 	const ImU32 colBody = (colNode & IM_COL32_A_MASK) ? colNode : colNodeSolid;
 
-	dl->AddRectFilled(origin, ImVec2(origin.x + canvasSize.x, origin.y + canvasSize.y), colCanvas);
-	dl->PushClipRect(origin, ImVec2(origin.x + canvasSize.x, origin.y + canvasSize.y), true);
-
-	if (hovered && (ImGui::IsMouseDragging(ImGuiMouseButton_Middle) ||
-					(ImGui::GetIO().KeyAlt && ImGui::IsMouseDragging(ImGuiMouseButton_Left)))) {
-		m_pan.x += ImGui::GetIO().MouseDelta.x / m_zoom;
-		m_pan.y += ImGui::GetIO().MouseDelta.y / m_zoom;
-	}
-	if (hovered && ImGui::GetIO().MouseWheel != 0.f) {
-		m_zoom = std::clamp(m_zoom + ImGui::GetIO().MouseWheel * 0.1f, 0.4f, 2.5f);
-	}
+	const ImVec2 canvasMax(origin.x + canvasSize.x, origin.y + canvasSize.y);
+	dl->AddRectFilled(origin, canvasMax, colCanvas);
+	// Window clip (not only the draw list) so inline widgets cannot spill into
+	// the menu or status bar, and cannot extend the scrollable range.
+	ImGui::PushClipRect(origin, canvasMax, true);
 
 	// Wires: hovered wires highlight (click selects, Del / right-click removes).
 	uint32_t hoveredLink = 0;
@@ -787,8 +827,7 @@ void NodeEditorWindow::drawCanvas(ecs::NodeGraphData& graph, const rig::node::Ev
 						} else if (ty == "vec4") {
 							const float sw = g_m.em * 1.3f * m_zoom;
 							const float sh = g_m.em * 0.85f * m_zoom;
-							const float sx =
-								rightSide ? pp.x + labelGap : pp.x - labelGap - sw;
+							const float sx = rightSide ? pp.x + labelGap : pp.x - labelGap - sw;
 							dl->AddRectFilled(ImVec2(sx, pp.y - sh * 0.5f),
 											  ImVec2(sx + sw, pp.y + sh * 0.5f),
 											  IM_COL32(static_cast<int>(v.r * 255.f),
@@ -813,10 +852,9 @@ void NodeEditorWindow::drawCanvas(ecs::NodeGraphData& graph, const rig::node::Ev
 		const int paramRows = inlineParamRows(node);
 		if (paramRows > 0 && m_zoom >= kInlineEditMinZoom) {
 			const int pinRows = pinRowCount(node);
-			const float y0 =
-				tl.y + (g_m.titleH + g_m.pad + static_cast<float>(pinRows) * g_m.pinRow +
-						g_m.paramGap) *
-						   m_zoom;
+			const float y0 = tl.y + (g_m.titleH + g_m.pad +
+									 static_cast<float>(pinRows) * g_m.pinRow + g_m.paramGap) *
+										m_zoom;
 			const float x0 = tl.x + g_m.pad * m_zoom;
 			const float itemW = std::max(24.f, w - 2.f * g_m.pad * m_zoom);
 			// Scale font + frame padding so widget rows track the zoomed node body.
@@ -1081,7 +1119,8 @@ void NodeEditorWindow::drawCanvas(ecs::NodeGraphData& graph, const rig::node::Ev
 					const ImVec2 pp = pinPos(node, pin, origin, m_zoom, m_pan);
 					const float dx = mouse.x - pp.x;
 					const float dy = mouse.y - pp.y;
-					if (dx * dx + dy * dy <= (g_m.pinR * m_zoom + 4.f) * (g_m.pinR * m_zoom + 4.f)) {
+					if (dx * dx + dy * dy <=
+						(g_m.pinR * m_zoom + 4.f) * (g_m.pinR * m_zoom + 4.f)) {
 						if (!rig::node::tryLink(graph, m_linkFromNode, m_linkFromPin, node.id,
 												pin.id)) {
 							spdlog::warn("[Node Editor] link rejected");
@@ -1130,7 +1169,10 @@ void NodeEditorWindow::drawCanvas(ecs::NodeGraphData& graph, const rig::node::Ev
 		}
 	}
 
-	dl->PopClipRect();
+	canvasWin->DC.CursorMaxPos = canvasCursorMax;
+	ImGui::SetScrollX(0.f);
+	ImGui::SetScrollY(0.f);
+	ImGui::PopClipRect();
 	ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + canvasSize.y));
 }
 
@@ -1163,7 +1205,7 @@ void NodeEditorWindow::renderContents() {
 
 	const float statusH = ImGui::GetFrameHeight() + ImGui::GetStyle().WindowPadding.y * 2.f;
 	ImGui::BeginChild("##node_body", ImVec2(0.f, -statusH), ImGuiChildFlags_None,
-					  ImGuiWindowFlags_NoScrollbar);
+					  ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
 
 	if (graphEntity == entt::null || !root || !active) {
 		const ImVec2 avail = ImGui::GetContentRegionAvail();
@@ -1192,20 +1234,7 @@ void NodeEditorWindow::renderContents() {
 			ImVec2(origin.x + 8.f, origin.y + 8.f), ImGui::GetColorU32(ImGuiCol_TextDisabled),
 			"No graph yet. Drop a filter property here, or File > Create demo graph.");
 
-		int spawned = 0;
-		for (const auto& req : takeScenePropPatchRequests(ecs)) {
-			if (!ecs->registry().valid(static_cast<entt::entity>(req.entity))) {
-				requestScenePropPatch(req.entity, req.name.c_str(), req.propType, req.withLfo,
-									  req.ecsTag);
-				continue;
-			}
-			const auto ge = ensureGraph(*ecs);
-			auto& g = ecs->getComponent<ecs::CNodeGraph>(ge);
-			const glm::vec2 pos =
-				glm::vec2{80.f, 80.f} + glm::vec2(24.f, 24.f) * static_cast<float>(spawned);
-			spawnPropRef(g, *ecs, req.entity, req.name.c_str(), req.propType, pos, req.withLfo);
-			++spawned;
-		}
+		applyPendingPatchRequests();
 
 		ImGui::EndChild();
 		drawStatusBar(nullptr, nullptr);
@@ -1237,21 +1266,8 @@ void NodeEditorWindow::renderContents() {
 		drawCanvas(*active, ev);
 		syncSelectionToGraph(*root, graphEntity, *ecs);
 
-		// Right-click "Patch to Node Editor" requests from prop drag pins
-		// (tagged requests only reach the editor bound to that deck's ECS).
-		int spawned = 0;
-		for (const auto& req : takeScenePropPatchRequests(ecs)) {
-			if (!ecs->registry().valid(static_cast<entt::entity>(req.entity))) {
-				requestScenePropPatch(req.entity, req.name.c_str(), req.propType, req.withLfo,
-									  req.ecsTag);
-				continue;
-			}
-			const glm::vec2 pos = m_canvasCenter - glm::vec2(g_m.nodeW * 0.5f, 0.f) +
-								  glm::vec2(24.f, 24.f) * static_cast<float>(spawned);
-			spawnPropRef(*active, *ecs, req.entity, req.name.c_str(), req.propType, pos,
-						 req.withLfo);
-			++spawned;
-		}
+		// Right-click patches from prop pins (LFO, Sound, or a bare ref).
+		applyPendingPatchRequests();
 
 		if (m_openRefPopup) {
 			ImGui::OpenPopup("##spawn_ref_from_scene");

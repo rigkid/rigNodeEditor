@@ -60,6 +60,10 @@ add_library(${PACK_NAME} STATIC
 	src/NodeEditorWindow.h
 	src/NodeInspector.cpp
 	src/NodeInspector.h
+	src/NodePatch.cpp
+	src/NodePatch.h
+	src/PatchBayWindow.cpp
+	src/PatchBayWindow.h
 )
 target_link_libraries(${PACK_NAME} PUBLIC rigkit rigNodeComponent)
 if(TARGET rigProject)

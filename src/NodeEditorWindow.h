@@ -44,6 +44,14 @@ class NodeEditorWindow : public IWindow {
 	void setHostEval(const rig::node::EvalResult* result, const float* time,
 					 std::unordered_map<uint32_t, float>* scratch);
 
+	/**
+	 * @brief Apply queued property patches (Node Editor, LFO, Sound).
+	 * @details `renderContents` calls this while the window is open. A hidden
+	 * window does not render, so the host calls this each frame instead and
+	 * the deck graph still receives the patch.
+	 */
+	void applyPendingPatchRequests();
+
   protected:
 	void renderContents() override;
 
@@ -58,7 +66,9 @@ class NodeEditorWindow : public IWindow {
 	/// Spawn a `ref.*` node bound to @p propName on @p entityId (shared by
 	/// drag-drop and right-click "Patch to Node Editor" requests).
 	uint32_t spawnPropRef(ecs::NodeGraphData& graph, MEcs& ecs, uint32_t entityId,
-						  const char* propName, int propType, glm::vec2 pos, bool withLfo);
+						  const char* propName, int propType, glm::vec2 pos, bool withLfo,
+						  const char* sourceType = nullptr, const char* sourcePin = nullptr,
+						  bool hasMapRange = false, float mapOutMin = 0.f, float mapOutMax = 1.f);
 	void drawMenuBar(std::shared_ptr<rigProject> document, entt::entity graphEntity,
 					 ecs::CNodeGraph* root, ecs::NodeGraphData* active);
 	void drawAddNodeMenu(ecs::NodeGraphData& graph);
