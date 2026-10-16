@@ -3,6 +3,7 @@
 #include "CNodeGraph.h"
 #include "CProject.h"
 #include "CSelection.h"
+#include "CompositeLibrary.h"
 #include "EntityPick.h"
 #include "FileDialogs.h"
 #include "GraphEval.h"
@@ -188,9 +189,10 @@ float bezierDistSq(const ImVec2& p, const ImVec2& p0, const ImVec2& c0, const Im
 
 } // namespace
 
-NodeEditorWindow::NodeEditorWindow(const std::string& title)
+NodeEditorWindow::NodeEditorWindow(const std::string& title, MEcs* ecs)
 	: IWindow(title, ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoScrollbar |
-						 ImGuiWindowFlags_NoScrollWithMouse) {
+						 ImGuiWindowFlags_NoScrollWithMouse),
+	  m_ecsOverride(ecs) {
 	setCategory("Edit");
 	m_openRigDialog.SetTitle("Open Scene");
 	setFileBrowserFilters(m_openRigDialog, {".rig"});
@@ -281,18 +283,41 @@ void NodeEditorWindow::drawAddNodeMenu(ecs::NodeGraphData& graph) {
 	ImGui::InputTextWithHint("##filter", "Search...", m_addFilter, sizeof(m_addFilter));
 	const std::string_view filter = m_addFilter;
 	const glm::vec2 spawnPos{-m_pan.x + 80.f, -m_pan.y + 80.f};
+	auto fold = [](std::string s) {
+		for (char& c : s) {
+			c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+		}
+		return s;
+	};
+	const std::string needle = fold(std::string(filter));
 	auto matches = [&](const rig::node::CatalogEntry& e) {
-		if (filter.empty()) {
+		if (needle.empty()) {
 			return true;
 		}
-		std::string hay = std::string(e.title) + " " + e.typeId + " " + e.category;
-		std::string needle(filter);
-		for (char& c : hay) {
-			c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+		const std::string hay = fold(std::string(e.title) + " " + e.typeId + " " + e.category);
+		return hay.find(needle) != std::string::npos;
+	};
+	const auto library = rig::node::listComposites(rig::node::compositeLibraryDir());
+	auto spawnSaved = [&](const rig::node::CompositeEntry& e) {
+		rig::node::CompositeFile file;
+		std::string err;
+		if (!rig::node::loadComposite(e.path, file, err)) {
+			spdlog::warn("[Node Editor] {}", err);
+			return;
 		}
-		for (char& c : needle) {
-			c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+		const uint32_t id = rig::node::spawnComposite(graph, file.node, spawnPos, e.path, err);
+		if (id == 0) {
+			spdlog::warn("[Node Editor] {}", err.empty() ? "could not spawn library node" : err);
+			return;
 		}
+		m_selectedNode = id;
+		m_multi = {id};
+	};
+	auto libraryMatches = [&](const rig::node::CompositeEntry& e) {
+		if (needle.empty()) {
+			return true;
+		}
+		const std::string hay = fold(e.name + " " + e.category + " " + e.description);
 		return hay.find(needle) != std::string::npos;
 	};
 	if (!filter.empty()) {
@@ -310,6 +335,18 @@ void NodeEditorWindow::drawAddNodeMenu(ecs::NodeGraphData& graph) {
 				}
 			}
 		}
+		for (const auto& e : library) {
+			if (!libraryMatches(e)) {
+				continue;
+			}
+			const std::string label = "Library/" + e.name + "##" + e.path;
+			if (ImGui::MenuItem(label.c_str())) {
+				spawnSaved(e);
+			}
+			if (ImGui::IsItemHovered() && !e.description.empty()) {
+				ImGui::SetTooltip("%s", e.description.c_str());
+			}
+		}
 	} else {
 		for (const char* cat : rig::node::catalogCategories()) {
 			if (!ImGui::BeginMenu(cat)) {
@@ -325,6 +362,21 @@ void NodeEditorWindow::drawAddNodeMenu(ecs::NodeGraphData& graph) {
 						m_selectedNode = id;
 						m_multi = {id};
 					}
+				}
+			}
+			ImGui::EndMenu();
+		}
+		if (ImGui::BeginMenu("Library")) {
+			if (library.empty()) {
+				ImGui::MenuItem("No saved nodes", nullptr, false, false);
+			}
+			for (const auto& e : library) {
+				const std::string label = e.name + "##" + e.path;
+				if (ImGui::MenuItem(label.c_str())) {
+					spawnSaved(e);
+				}
+				if (ImGui::IsItemHovered() && !e.description.empty()) {
+					ImGui::SetTooltip("%s", e.description.c_str());
 				}
 			}
 			ImGui::EndMenu();
@@ -406,6 +458,41 @@ void NodeEditorWindow::drawGroupMenuItems(ecs::CNodeGraph& root, ecs::NodeGraphD
 				m_selectedNode = 0;
 				m_selectedPin = 0;
 				m_linking = false;
+			}
+		} else {
+			if (ImGui::MenuItem("Save to library")) {
+				const std::filesystem::path dir = rig::node::compositeLibraryDir();
+				const std::filesystem::path path = rig::node::uniqueCompositePath(dir, sel->title);
+				std::string err;
+				if (!rig::node::saveComposite(*sel, path, err)) {
+					spdlog::warn("[Node Editor] {}", err);
+				} else {
+					rig::node::setParamString(*sel, rig::node::kCompositeLibraryParam,
+											  path.string());
+					spdlog::info("[Node Editor] saved library node {}", path.string());
+				}
+			}
+			if (ImGui::IsItemHovered()) {
+				ImGui::SetTooltip("Write this group to user/nodes as a new library file.");
+			}
+			const std::string lib =
+				rig::node::getParamString(*sel, rig::node::kCompositeLibraryParam);
+			const bool canUpdate = !lib.empty();
+			if (ImGui::MenuItem("Update library entry", nullptr, false, canUpdate)) {
+				std::string err;
+				if (!rig::node::saveComposite(*sel, lib, err)) {
+					spdlog::warn("[Node Editor] {}", err);
+				} else {
+					spdlog::info("[Node Editor] updated library node {}", lib);
+				}
+			}
+			if (ImGui::IsItemHovered()) {
+				if (canUpdate) {
+					ImGui::SetTooltip("Overwrite %s\nOther copies stay as they are.", lib.c_str());
+				} else {
+					ImGui::SetTooltip(
+						"Save this group, or spawn it from Add node > Library, first.");
+				}
 			}
 		}
 	}

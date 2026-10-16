@@ -25,12 +25,13 @@ class rigProject;
  */
 class NodeEditorWindow : public IWindow {
   public:
-	explicit NodeEditorWindow(const std::string& title = "Node Editor");
+	explicit NodeEditorWindow(const std::string& title = "Node Editor", MEcs* ecs = nullptr);
 
 	/**
 	 * @brief Edit graphs in @p ecs instead of the engine registry.
-	 * @details KidVJ decks each own an MEcs. Null restores the engine ECS.
-	 * Properties-window selection sync is skipped while an override is set.
+	 * @details Null restores the engine ECS. Prefer the constructor or
+	 * `rigNodeEditor::makeEditor` for the first bind. Call this when the host
+	 * replaces that registry. Properties selection sync is skipped while set.
 	 */
 	void setEcsOverride(MEcs* ecs) { m_ecsOverride = ecs; }
 	MEcs* ecsOverride() const { return m_ecsOverride; }

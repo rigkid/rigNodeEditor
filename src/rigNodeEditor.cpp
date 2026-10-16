@@ -52,11 +52,39 @@ void registerSoundPatchSources() {
 
 } // namespace
 
-rigNodeEditor::rigNodeEditor() : IPack("rigNodeEditor") {}
+rigNodeEditor::rigNodeEditor() : rigNodeEditor(Options{}) {}
+
+rigNodeEditor::rigNodeEditor(Options opts) : IPack("rigNodeEditor"), m_opts(opts) {}
 
 bool rigNodeEditor::init() {
 	spdlog::info("[rigNodeEditor] init");
 	return true;
+}
+
+void rigNodeEditor::wireProperties() {
+	auto* engine = getEngine();
+	auto* ui = engine ? engine->getUiManager() : nullptr;
+	auto* wm = ui ? ui->getWindowManager() : nullptr;
+	if (!wm) {
+		return;
+	}
+	if (auto props = wm->getWindow<PropertiesWindow>("Properties")) {
+		props->addExtraDrawer([](MEcs& ecs, entt::entity entity) {
+			rig::node::drawGraphNodeInspector(ecs, entity);
+			rig::node::drawSceneModulateDrawer(ecs, entity);
+		});
+	}
+}
+
+std::shared_ptr<NodeEditorWindow> rigNodeEditor::makeEditor(MEcs* ecs, const std::string& title) {
+	auto* engine = getEngine();
+	auto* ui = engine ? engine->getUiManager() : nullptr;
+	auto* wm = ui ? ui->getWindowManager() : nullptr;
+	if (!wm) {
+		spdlog::warn("[rigNodeEditor] no window manager - cannot open {}", title);
+		return nullptr;
+	}
+	return wm->createWindow<NodeEditorWindow>(title, ecs);
 }
 
 void rigNodeEditor::setup() {
@@ -70,6 +98,11 @@ void rigNodeEditor::setup() {
 		spdlog::warn("[rigNodeEditor] no IMui - skip Node Editor (need rigImGui)");
 		return;
 	}
+	wireProperties();
+	if (!m_opts.registerWindows) {
+		spdlog::info("[rigNodeEditor] registerWindows=false - host supplies editors");
+		return;
+	}
 	auto* wm = ui->getWindowManager();
 	if (!wm) {
 		return;
@@ -80,13 +113,6 @@ void rigNodeEditor::setup() {
 	wm->hideWindow("Patch");
 	ui->registerShortcut("patch.toggle", "Patch", "Ctrl+P", [wm] { wm->toggleWindow("Patch"); });
 	ui->registerViewAction("Patch", [wm] { wm->toggleWindow("Patch"); }, "Ctrl+P");
-
-	if (auto props = wm->getWindow<PropertiesWindow>("Properties")) {
-		props->addExtraDrawer([](MEcs& ecs, entt::entity entity) {
-			rig::node::drawGraphNodeInspector(ecs, entity);
-			rig::node::drawSceneModulateDrawer(ecs, entity);
-		});
-	}
 
 	spdlog::info("[rigNodeEditor] Node Editor window registered");
 }
