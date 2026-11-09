@@ -29,6 +29,7 @@ class rigNodeEditor : public IPack {
 
 	bool init() override;
 	void setup() override;
+	void cleanup() override;
 
 	const Options& options() const { return m_opts; }
 

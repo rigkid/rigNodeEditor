@@ -2,6 +2,7 @@
 
 #include "CNodeGraph.h"
 #include "MWindow.h"
+#include "Mui.h"
 #include "NodeEditorWindow.h"
 #include "NodeGraph.h"
 #include "NodePatch.h"
@@ -137,7 +138,7 @@ uint32_t pickInPin(const ecs::NodeGraphData& graph, uint32_t nodeId, uint32_t pr
 
 } // namespace
 
-PatchBayWindow::PatchBayWindow(const std::string& title) : IWindow(title) {
+PatchBayWindow::PatchBayWindow(const std::string& title) : ImGuiPanel(title) {
 	setCategory("Edit");
 }
 
@@ -149,9 +150,10 @@ MEcs* PatchBayWindow::resolveEcs() const {
 	if (!engine) {
 		return nullptr;
 	}
-	if (auto* ui = engine->getUiManager()) {
-		if (auto* wm = ui->getWindowManager()) {
-			if (auto ed = wm->getWindow<NodeEditorWindow>("Node Editor")) {
+	// Prefer any NodeEditorWindow ECS override (title is host-local).
+	if (auto* wm = windowManager(engine->getUiManager())) {
+		for (const auto& name : wm->getAllWindowNames()) {
+			if (auto ed = wm->getWindow<NodeEditorWindow>(name)) {
 				if (auto* o = ed->ecsOverride()) {
 					return o;
 				}
@@ -228,9 +230,14 @@ void PatchBayWindow::renderContents() {
 						nid = node_ui::findRefNode(*graph, entName, prop->name, prop->propType);
 					}
 					if (nid == 0) {
+						node_ui::SpawnPropRefOpts opts;
+						opts.withLfo = withLfo;
+						opts.hasMapRange = prop->hasRange;
+						opts.mapOutMin = prop->rangeMin;
+						opts.mapOutMax = prop->rangeMax;
 						nid = node_ui::spawnPropRef(*graph, *ecs, prop->entity, prop->name,
 													prop->propType, node_ui::nextSpawnPos(*graph),
-													withLfo);
+													opts);
 					}
 					if (auto* n = graph->findNode(nid)) {
 						*toNode = nid;

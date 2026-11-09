@@ -13,7 +13,8 @@
 
 #include "CNodeGraph.h"
 #include "GraphEval.h"
-#include "IWindow.h"
+#include "ImGuiPanel.h"
+#include "NodePatch.h"
 #include "ecs/MEcs.h"
 
 namespace rigkit {
@@ -23,7 +24,7 @@ class rigProject;
 /**
  * @brief Edit a `CNodeGraph` (with dive into nestable groups).
  */
-class NodeEditorWindow : public IWindow {
+class NodeEditorWindow : public ImGuiPanel {
   public:
 	explicit NodeEditorWindow(const std::string& title = "Node Editor", MEcs* ecs = nullptr);
 
@@ -67,9 +68,8 @@ class NodeEditorWindow : public IWindow {
 	/// Spawn a `ref.*` node bound to @p propName on @p entityId (shared by
 	/// drag-drop and right-click "Patch to Node Editor" requests).
 	uint32_t spawnPropRef(ecs::NodeGraphData& graph, MEcs& ecs, uint32_t entityId,
-						  const char* propName, int propType, glm::vec2 pos, bool withLfo,
-						  const char* sourceType = nullptr, const char* sourcePin = nullptr,
-						  bool hasMapRange = false, float mapOutMin = 0.f, float mapOutMax = 1.f);
+						  const char* propName, int propType, glm::vec2 pos,
+						  const node_ui::SpawnPropRefOpts& opts = {});
 	void drawMenuBar(std::shared_ptr<rigProject> document, entt::entity graphEntity,
 					 ecs::CNodeGraph* root, ecs::NodeGraphData* active);
 	void drawAddNodeMenu(ecs::NodeGraphData& graph);

@@ -58,6 +58,8 @@ add_library(${PACK_NAME} STATIC
 	src/rigNodeEditor.h
 	src/NodeEditorWindow.cpp
 	src/NodeEditorWindow.h
+	src/NodeEditorPrefs.cpp
+	src/NodeEditorPrefs.h
 	src/NodeInspector.cpp
 	src/NodeInspector.h
 	src/NodePatch.cpp

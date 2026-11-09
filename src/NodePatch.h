@@ -32,17 +32,32 @@ uint32_t findRefNode(const ecs::NodeGraphData& graph, std::string_view entityNam
 uint32_t findRefForEntity(const ecs::NodeGraphData& graph, std::string_view entityName);
 
 /**
+ * @brief Options for `spawnPropRef` (one POD instead of a bool/float soup).
+ */
+struct SpawnPropRefOpts {
+	bool withLfo = false;
+	const char* sourceType = nullptr;
+	const char* sourcePin = nullptr;
+	bool hasMapRange = false;
+	float mapOutMin = 0.f;
+	float mapOutMax = 1.f;
+	uint32_t reuseLfo = 0;
+};
+
+/**
  * @brief Spawn a `ref.*` bound to @p propName. Optional source wired into it.
- * @details @p withLfo spawns `mod.lfo`. @p sourceType / @p sourcePin spawn that
- * catalog node instead (Sound is `mod.audio` + `level` / `bass` / ...). Sound
- * goes through a `float.map` (input 0..1, output the knob range when
- * @p hasMapRange). An existing `mod.audio` and that Map are reused.
+ * @details `opts.withLfo` spawns `mod.lfo`, or wires `opts.reuseLfo` when that
+ * node is already a `mod.lfo`. The LFO goes through a new `float.map`: input is
+ * the LFO span (offset plus or minus amplitude; -1..1 at the defaults), output
+ * is the knob range when `opts.hasMapRange` and 0..1 otherwise.
+ * `opts.sourceType` / `opts.sourcePin` spawn that catalog node instead (Sound
+ * is `mod.audio` + `level` / `bass` / ...). Sound goes through a `float.map`
+ * too. An existing `mod.audio` is reused; each LFO patch gets its own Map so
+ * slider ranges stay independent.
  * @return Ref node id (0 on failure).
  */
 uint32_t spawnPropRef(ecs::NodeGraphData& graph, MEcs& ecs, uint32_t entityId, const char* propName,
-					  int propType, glm::vec2 pos, bool withLfo, const char* sourceType = nullptr,
-					  const char* sourcePin = nullptr, bool hasMapRange = false,
-					  float mapOutMin = 0.f, float mapOutMax = 1.f);
+					  int propType, glm::vec2 pos, const SpawnPropRefOpts& opts = {});
 
 /**
  * @brief Remove every ref bound to this property, plus a Map or LFO that only fed it.

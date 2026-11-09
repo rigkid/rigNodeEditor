@@ -38,6 +38,72 @@ rigkit::ecs::NodeGraphData* graphAtDive(rigkit::ecs::CNodeGraph& root) {
 
 } // namespace
 
+const char* catalogParamLabel(const rigkit::ecs::GraphNode& node, const CatalogParam& p) {
+	if (node.typeId == "mod.lfo" && std::string_view(p.key) == "freq" &&
+		getParamFloat(node, "sync", 0.f) >= 0.5f) {
+		return "Per beat";
+	}
+	return p.label;
+}
+
+void drawCatalogParam(rigkit::ecs::GraphNode& node, const CatalogParam& p, bool linked,
+					  bool compact) {
+	const bool check = p.ui == 2 || std::string_view(p.type) == "bool";
+	const bool combo = p.ui == 1 && p.comboLabels;
+	if (check) {
+		bool on = getParamFloat(node, p.key, p.def) >= 0.5f;
+		if (ImGui::Checkbox(p.label, &on)) {
+			setParamInt(node, p.key, on ? 1 : 0, (p.type && p.type[0]) ? p.type : "bool");
+		}
+		if (std::string_view(p.key) == "sync" && ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("Lock speed to the live clock. Frequency becomes cycles per "
+							  "beat. 1 is one wave per beat, 0.25 is one wave per bar.");
+		}
+		return;
+	}
+	if (linked) {
+		if (compact) {
+			ImGui::TextDisabled("linked");
+		} else {
+			ImGui::TextDisabled("%s: linked (driven by pin)", p.label);
+		}
+		return;
+	}
+	const char* label = catalogParamLabel(node, p);
+	float v = getParamFloat(node, p.key, p.def);
+	if (combo) {
+		int idx = static_cast<int>(std::lround(v));
+		const int lo = static_cast<int>(p.min);
+		const int hi = static_cast<int>(p.max);
+		idx = std::clamp(idx, lo, hi);
+		if (compact) {
+			if (ImGui::Combo("##combo", &idx, p.comboLabels, hi - lo + 1)) {
+				setParamFloat(node, p.key, static_cast<float>(idx));
+			}
+		} else if (ImGui::Combo(label, &idx, p.comboLabels, hi - lo + 1)) {
+			setParamFloat(node, p.key, static_cast<float>(idx));
+		}
+		return;
+	}
+	if (compact) {
+		char sample[64];
+		std::snprintf(sample, sizeof(sample), "%s: %.2f", label, v);
+		char fmt[64];
+		const float textW = ImGui::CalcTextSize(sample).x;
+		const float fieldW = ImGui::CalcItemWidth();
+		if (textW + ImGui::GetStyle().FramePadding.x * 2.f <= fieldW) {
+			std::snprintf(fmt, sizeof(fmt), "%s: %%.2f", label);
+		} else {
+			std::snprintf(fmt, sizeof(fmt), "%%.2f");
+		}
+		if (ImGui::DragFloat("##v", &v, p.speed, p.min, p.max, fmt)) {
+			setParamFloat(node, p.key, v);
+		}
+	} else if (ImGui::DragFloat(label, &v, p.speed, p.min, p.max)) {
+		setParamFloat(node, p.key, v);
+	}
+}
+
 void drawSceneModulateDrawer(rigkit::MEcs& ecs, entt::entity entity) {
 	if (entity == entt::null || ecs.hasComponent<rigkit::ecs::CNodeGraph>(entity)) {
 		return;
@@ -290,18 +356,7 @@ void drawGraphNodeInspector(rigkit::MEcs& ecs, entt::entity graphEntity) {
 			ImGui::TextDisabled("%s: linked (driven by pin)", p.label);
 			continue;
 		}
-		float v = getParamFloat(*sel, p.key, p.def);
-		if (p.ui == 1 && p.comboLabels) {
-			int idx = static_cast<int>(std::lround(v));
-			const int lo = static_cast<int>(p.min);
-			const int hi = static_cast<int>(p.max);
-			idx = std::clamp(idx, lo, hi);
-			if (ImGui::Combo(p.label, &idx, p.comboLabels, hi - lo + 1)) {
-				setParamFloat(*sel, p.key, static_cast<float>(idx));
-			}
-		} else if (ImGui::DragFloat(p.label, &v, p.speed, p.min, p.max)) {
-			setParamFloat(*sel, p.key, v);
-		}
+		drawCatalogParam(*sel, p, linked, false);
 	}
 }
 

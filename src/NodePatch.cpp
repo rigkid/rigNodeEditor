@@ -6,6 +6,7 @@
 #include "ecs/PropertyReflection.h"
 
 #include <algorithm>
+#include <cmath>
 #include <string_view>
 #include <unordered_set>
 #include <vector>
@@ -288,11 +289,75 @@ void wireSourceIntoRef(ecs::NodeGraphData& graph, uint32_t refId, std::string_vi
 	rig::node::tryLinkByName(graph, src, sourcePin, refId, "in");
 }
 
+/// LFO out is bipolar (offset plus or minus amplitude). A Map per patch lands that span on
+/// the slider. @p reuseLfo wires an existing `mod.lfo` and leaves it where it
+/// sits; 0 spawns one to the left of the Map.
+void wireLfoIntoRef(ecs::NodeGraphData& graph, uint32_t refId, glm::vec2 pos, uint32_t reuseLfo,
+					bool hasMapRange, float mapOutMin, float mapOutMax) {
+	const auto* ref = graph.findNode(refId);
+	if (!ref) {
+		return;
+	}
+	uint32_t inPin = 0;
+	for (const auto& pin : ref->pins) {
+		if (pin.kind == ecs::NodePinKind::In && pin.name == "in") {
+			inPin = pin.id;
+			break;
+		}
+	}
+	if (inPin == 0) {
+		inPin = firstPin(*ref, ecs::NodePinKind::In);
+	}
+	if (inPin == 0) {
+		return;
+	}
+	glm::vec2 refPos = pos;
+	if (const auto* n = graph.findNode(refId)) {
+		refPos = n->pos;
+	}
+	uint32_t lfoId = 0;
+	if (const auto* existing = graph.findNode(reuseLfo)) {
+		if (existing->typeId == "mod.lfo") {
+			lfoId = reuseLfo;
+		}
+	}
+	if (lfoId == 0) {
+		lfoId = rig::node::spawnCatalogNode(graph, "mod.lfo", refPos + glm::vec2{-360.f, 0.f});
+	}
+	const auto* lfo = graph.findNode(lfoId);
+	if (!lfo) {
+		return;
+	}
+	const float amp = std::fabs(rig::node::getParamFloat(*lfo, "amp", 1.f));
+	const float off = rig::node::getParamFloat(*lfo, "offset", 0.f);
+	const float inMin = off - amp;
+	const float inMax = off + amp;
+	const float outLo = hasMapRange ? mapOutMin : 0.f;
+	const float outHi = hasMapRange ? mapOutMax : 1.f;
+
+	const uint32_t mapId =
+		rig::node::spawnCatalogNode(graph, "float.map", refPos + glm::vec2{-180.f, 0.f});
+	if (mapId == 0) {
+		clearPinInputs(graph, refId, inPin);
+		rig::node::tryLinkByName(graph, lfoId, "out", refId, "in");
+		return;
+	}
+	if (auto* map = graph.findNode(mapId)) {
+		map->title = "Map";
+		rig::node::setParamFloat(*map, "inMin", inMin);
+		rig::node::setParamFloat(*map, "inMax", inMax);
+		rig::node::setParamFloat(*map, "outMin", outLo);
+		rig::node::setParamFloat(*map, "outMax", outHi);
+	}
+	clearPinInputs(graph, refId, inPin);
+	rig::node::tryLinkByName(graph, lfoId, "out", mapId, "in");
+	rig::node::tryLinkByName(graph, mapId, "out", refId, "in");
+}
+
 } // namespace
 
 uint32_t spawnPropRef(ecs::NodeGraphData& graph, MEcs& ecs, uint32_t entityId, const char* propName,
-					  int propType, glm::vec2 pos, bool withLfo, const char* sourceType,
-					  const char* sourcePin, bool hasMapRange, float mapOutMin, float mapOutMax) {
+					  int propType, glm::vec2 pos, const SpawnPropRefOpts& opts) {
 	if (!propName || propName[0] == '\0') {
 		return 0;
 	}
@@ -305,7 +370,7 @@ uint32_t spawnPropRef(ecs::NodeGraphData& graph, MEcs& ecs, uint32_t entityId, c
 		entName = "entity";
 	}
 	const char* typeId = refTypeIdForProp(propType);
-	const bool hasSource = sourceType && sourceType[0] != '\0';
+	const bool hasSource = opts.sourceType && opts.sourceType[0] != '\0';
 	uint32_t nid = 0;
 	if (hasSource) {
 		nid = findRefNode(graph, entName, propName, propType);
@@ -323,14 +388,11 @@ uint32_t spawnPropRef(ecs::NodeGraphData& graph, MEcs& ecs, uint32_t entityId, c
 		return nid;
 	}
 	if (hasSource) {
-		wireSourceIntoRef(graph, nid, sourceType, sourcePin ? sourcePin : "", pos, hasMapRange,
-						  mapOutMin, mapOutMax);
-	} else if (withLfo) {
-		const uint32_t lfoId =
-			rig::node::spawnCatalogNode(graph, "mod.lfo", pos + glm::vec2{-180.f, 0.f});
-		if (lfoId != 0) {
-			rig::node::tryLinkByName(graph, lfoId, "out", nid, "in");
-		}
+		wireSourceIntoRef(graph, nid, opts.sourceType, opts.sourcePin ? opts.sourcePin : "", pos,
+						  opts.hasMapRange, opts.mapOutMin, opts.mapOutMax);
+	} else if (opts.withLfo) {
+		wireLfoIntoRef(graph, nid, pos, opts.reuseLfo, opts.hasMapRange, opts.mapOutMin,
+					   opts.mapOutMax);
 	}
 	return nid;
 }

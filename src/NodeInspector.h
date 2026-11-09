@@ -1,10 +1,24 @@
 #pragma once
 
-#include "ecs/MEcs.h"
 #include "CNodeGraph.h"
+#include "NodeCatalog.h"
+#include "ecs/MEcs.h"
 
 namespace rig {
 namespace node {
+
+/**
+ * @brief Display label for a catalog param (e.g. LFO freq becomes "Per beat" when sync).
+ */
+const char* catalogParamLabel(const rigkit::ecs::GraphNode& node, const CatalogParam& p);
+
+/**
+ * @brief Draw one non-string catalog param (bool / combo / float).
+ * @param linked When true, show a disabled "linked" row instead of the editor.
+ * @param compact When true, float uses an anonymous id and optional value-in-format (canvas).
+ */
+void drawCatalogParam(rigkit::ecs::GraphNode& node, const CatalogParam& p, bool linked,
+					  bool compact);
 
 /**
  * @brief Draw the Node Editor selection in Properties (params / ref / outs).

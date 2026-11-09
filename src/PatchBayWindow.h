@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-#include "IWindow.h"
+#include "ImGuiPanel.h"
 #include "ecs/MEcs.h"
 
 namespace rigkit {
@@ -11,7 +11,7 @@ namespace rigkit {
  * @brief From / Destination list over the same `CNodeGraph` the Node Editor draws.
  * @details Ctrl-P toggles this window. It does not replace the canvas.
  */
-class PatchBayWindow : public IWindow {
+class PatchBayWindow : public ImGuiPanel {
   public:
 	explicit PatchBayWindow(const std::string& title = "Patch");
 

@@ -2,7 +2,9 @@
 
 #include "CNodeGraph.h"
 #include "MWindow.h"
+#include "Mui.h"
 #include "NodeCatalog.h"
+#include "NodeEditorPrefs.h"
 #include "NodeEditorWindow.h"
 #include "NodeInspector.h"
 #include "PatchBayWindow.h"
@@ -11,6 +13,7 @@
 #include "core/IMui.h"
 #include "core/RigKitEngine.h"
 #include "core/pack/PackRegistry.h"
+#include "core/util/MSettings.h"
 
 #include <spdlog/spdlog.h>
 #include <string>
@@ -63,8 +66,7 @@ bool rigNodeEditor::init() {
 
 void rigNodeEditor::wireProperties() {
 	auto* engine = getEngine();
-	auto* ui = engine ? engine->getUiManager() : nullptr;
-	auto* wm = ui ? ui->getWindowManager() : nullptr;
+	auto* wm = windowManager(engine ? engine->getUiManager() : nullptr);
 	if (!wm) {
 		return;
 	}
@@ -78,8 +80,7 @@ void rigNodeEditor::wireProperties() {
 
 std::shared_ptr<NodeEditorWindow> rigNodeEditor::makeEditor(MEcs* ecs, const std::string& title) {
 	auto* engine = getEngine();
-	auto* ui = engine ? engine->getUiManager() : nullptr;
-	auto* wm = ui ? ui->getWindowManager() : nullptr;
+	auto* wm = windowManager(engine ? engine->getUiManager() : nullptr);
 	if (!wm) {
 		spdlog::warn("[rigNodeEditor] no window manager - cannot open {}", title);
 		return nullptr;
@@ -93,6 +94,13 @@ void rigNodeEditor::setup() {
 	if (!engine) {
 		return;
 	}
+	// User preferences (docs/settings.md). Registered before the UI check so
+	// stored values load/clamp on headless hosts too; editor windows read the
+	// live POD at draw time.
+	if (auto* settings = engine->getSettingsManager()) {
+		settings->registerPreferences("rigNodeEditor.editor", "Node Editor", &nodeEditorPrefs(),
+									  []() { nodeEditorPrefs().clamp(); });
+	}
 	auto* ui = engine->getUiManager();
 	if (!ui) {
 		spdlog::warn("[rigNodeEditor] no IMui - skip Node Editor (need rigImGui)");
@@ -103,7 +111,7 @@ void rigNodeEditor::setup() {
 		spdlog::info("[rigNodeEditor] registerWindows=false - host supplies editors");
 		return;
 	}
-	auto* wm = ui->getWindowManager();
+	auto* wm = windowManager(ui);
 	if (!wm) {
 		return;
 	}
@@ -115,6 +123,14 @@ void rigNodeEditor::setup() {
 	ui->registerViewAction("Patch", [wm] { wm->toggleWindow("Patch"); }, "Ctrl+P");
 
 	spdlog::info("[rigNodeEditor] Node Editor window registered");
+}
+
+void rigNodeEditor::cleanup() {
+	if (auto* engine = getEngine()) {
+		if (auto* settings = engine->getSettingsManager()) {
+			settings->unregisterPreferences("rigNodeEditor.editor");
+		}
+	}
 }
 
 } // namespace rigkit
