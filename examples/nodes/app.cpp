@@ -11,7 +11,7 @@
 #include "packs/rigImGui/src/Mui.h"
 #include "packs/rigImGui/src/PropertiesWindow.h"
 #include "packs/rigImGui/src/rigImGui.h"
-#include "packs/rigNodeComponent/src/NodeCatalog.h"
+#include "packs/rigNode/src/NodeCatalog.h"
 #include "packs/rigNodeComponent/src/NodeGraph.h"
 #include "packs/rigNodeComponent/src/rigNodeComponent.h"
 #include "packs/rigNodeEditor/src/rigNodeEditor.h"

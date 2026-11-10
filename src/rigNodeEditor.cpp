@@ -23,6 +23,11 @@
 namespace rigkit {
 namespace {
 
+MWindow* windowManager(IMui* ui) {
+	auto* mui = dynamic_cast<Mui*>(ui);
+	return mui ? mui->getWindowManager() : nullptr;
+}
+
 std::string soundPinLabel(std::string_view name) {
 	std::string label(name);
 	if (!label.empty() && label[0] >= 'a' && label[0] <= 'z') {

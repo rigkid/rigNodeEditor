@@ -31,6 +31,11 @@
       "ref": "main"
     },
     {
+      "name": "rigNode",
+      "url": "https://github.com/rigkid/rigNode.git",
+      "ref": "main"
+    },
+    {
       "name": "rigNodeEditor",
       "url": "https://github.com/rigkid/rigNodeEditor.git",
       "ref": "main"

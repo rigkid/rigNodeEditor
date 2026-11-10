@@ -10,6 +10,7 @@
     "rigComponent",
     "rigProject",
     "rigNodeComponent",
+    "rigNode",
     "rigImGui"
   ],
   "include_paths": [

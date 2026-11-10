@@ -151,7 +151,8 @@ MEcs* PatchBayWindow::resolveEcs() const {
 		return nullptr;
 	}
 	// Prefer any NodeEditorWindow ECS override (title is host-local).
-	if (auto* wm = windowManager(engine->getUiManager())) {
+	auto* mui = dynamic_cast<Mui*>(engine->getUiManager());
+	if (auto* wm = mui ? mui->getWindowManager() : nullptr) {
 		for (const auto& name : wm->getAllWindowNames()) {
 			if (auto ed = wm->getWindow<NodeEditorWindow>(name)) {
 				if (auto* o = ed->ecsOverride()) {

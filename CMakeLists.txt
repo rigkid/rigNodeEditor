@@ -40,6 +40,19 @@ if(NOT TARGET rigNodeComponent)
 	endif()
 endif()
 
+if(NOT TARGET rigNode)
+	if(DEFINED RIGKIT_ROOT AND NOT RIGKIT_ROOT STREQUAL "")
+		set(_rigNode_dir "${RIGKIT_ROOT}/packs/rigNode")
+	else()
+		set(_rigNode_dir "${CMAKE_SOURCE_DIR}/packs/rigNode")
+	endif()
+	if(EXISTS "${_rigNode_dir}/CMakeLists.txt")
+		add_subdirectory("${_rigNode_dir}" "${CMAKE_BINARY_DIR}/packs/rigNode")
+	else()
+		message(FATAL_ERROR "rigNodeEditor requires rigNode under packs/rigNode")
+	endif()
+endif()
+
 if(NOT TARGET rigImGui)
 	if(DEFINED RIGKIT_ROOT AND NOT RIGKIT_ROOT STREQUAL "")
 		set(_rigImGui_dir "${RIGKIT_ROOT}/packs/rigImGui")
@@ -67,7 +80,7 @@ add_library(${PACK_NAME} STATIC
 	src/PatchBayWindow.cpp
 	src/PatchBayWindow.h
 )
-target_link_libraries(${PACK_NAME} PUBLIC rigkit rigNodeComponent)
+target_link_libraries(${PACK_NAME} PUBLIC rigkit rigNodeComponent rigNode)
 if(TARGET rigProject)
 	target_link_libraries(${PACK_NAME} PUBLIC rigProject)
 endif()
