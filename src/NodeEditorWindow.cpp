@@ -2,6 +2,7 @@
 
 #include "CNodeGraph.h"
 #include "CProject.h"
+#include "DocumentEnvelope.h"
 #include "CSelection.h"
 #include "CompositeLibrary.h"
 #include "EntityPick.h"
@@ -385,8 +386,7 @@ entt::entity NodeEditorWindow::ensureGraph(MEcs& ecs) {
 }
 
 void NodeEditorWindow::ensureDocument(MEcs& ecs, const std::string& pathHint) {
-	for (auto entity : ecs.view<ecs::CProject>()) {
-		(void)entity;
+	if (project::documentProject(ecs.registry())) {
 		return;
 	}
 	auto e = ecs.createEntity("document");
@@ -400,6 +400,7 @@ void NodeEditorWindow::ensureDocument(MEcs& ecs, const std::string& pathHint) {
 	doc.path = pathHint;
 	doc.dirty = true;
 	ecs.addComponent<ecs::CProject>(e, doc);
+	project::bindDocument(ecs.registry(), e);
 }
 
 ecs::NodeGraphData* NodeEditorWindow::activeGraph(ecs::CNodeGraph& root) {
@@ -1622,10 +1623,9 @@ void NodeEditorWindow::renderContents() {
 		m_saveRigDialog.ClearSelected();
 		path = document->documentPath(path);
 		ensureDocument(*ecs, path);
-		for (auto entity : ecs->view<ecs::CProject>()) {
-			ecs->getComponent<ecs::CProject>(entity).path = path;
-			ecs->getComponent<ecs::CProject>(entity).dirty = true;
-			break;
+		if (ecs::CProject* doc = project::documentProject(ecs->registry())) {
+			doc->path = path;
+			doc->dirty = true;
 		}
 		document->requestSave(path);
 		spdlog::info("[Node Editor] queued scene save {}", path);

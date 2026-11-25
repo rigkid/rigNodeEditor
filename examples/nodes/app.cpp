@@ -15,7 +15,7 @@
 #include "packs/rigNodeComponent/src/NodeGraph.h"
 #include "packs/rigNodeComponent/src/rigNodeComponent.h"
 #include "packs/rigNodeEditor/src/rigNodeEditor.h"
-#include "packs/rigProject/src/CProject.h"
+#include "packs/rigProjectComponent/src/DocumentEnvelope.h"
 #include "packs/rigProject/src/rigProject.h"
 #include "packs/rigSystems/src/rigSystems.h"
 #include "imgui_internal.h"
@@ -167,6 +167,7 @@ void NodesApp::setup() {
 		d.title = "nodes-demo";
 		d.dirty = true;
 		ecs->addComponent<rigkit::ecs::CProject>(doc, d);
+		rigkit::project::bindDocument(ecs->registry(), doc);
 	}
 
 	// Scene entity driven by Color Ref (Fill R/G/B) - watch Fill in Properties.
