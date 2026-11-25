@@ -24,7 +24,7 @@ bool isRefType(std::string_view typeId);
 const char* refTypeIdForProp(int propType);
 
 /**
- * @brief Existing `ref.*` bound to this entity + property, or 0.
+ * @brief Existing @c ref.\* bound to this entity + property, or 0.
  */
 uint32_t findRefNode(const ecs::NodeGraphData& graph, std::string_view entityName,
 					 std::string_view propName, int propType);
@@ -45,7 +45,7 @@ struct SpawnPropRefOpts {
 };
 
 /**
- * @brief Spawn a `ref.*` bound to @p propName. Optional source wired into it.
+ * @brief Spawn a @c ref.\* bound to @p propName. Optional source wired into it.
  * @details `opts.withLfo` spawns `mod.lfo`, or wires `opts.reuseLfo` when that
  * node is already a `mod.lfo`. The LFO goes through a new `float.map`: input is
  * the LFO span (offset plus or minus amplitude; -1..1 at the defaults), output

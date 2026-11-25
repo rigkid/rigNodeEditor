@@ -65,7 +65,7 @@ class NodeEditorWindow : public ImGuiPanel {
 	void ensureDocument(MEcs& ecs, const std::string& pathHint);
 	ecs::NodeGraphData* activeGraph(ecs::CNodeGraph& root);
 	void drawCanvas(ecs::NodeGraphData& graph, const rig::node::EvalResult* ev);
-	/// Spawn a `ref.*` node bound to @p propName on @p entityId (shared by
+	/// Spawn a @c ref.\* node bound to @p propName on @p entityId (shared by
 	/// drag-drop and right-click "Patch to Node Editor" requests).
 	uint32_t spawnPropRef(ecs::NodeGraphData& graph, MEcs& ecs, uint32_t entityId,
 						  const char* propName, int propType, glm::vec2 pos,
